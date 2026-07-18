@@ -7,7 +7,7 @@
 ## Структура
 
 - `frontend` — мобільний інтерфейс Telegram Mini App для Vercel.
-- `backend` — API, серверні таймери та майбутній read-only колектор Pocket для Render.
+- `backend` — API, серверні таймери та read-only Pocket Demo collector для Render.
 - `docs` — архітектурні рішення та поетапний план.
 
 Frontend і backend є окремими застосунками. Секрети ніколи не передаються у frontend.
@@ -38,6 +38,8 @@ npm run dev:frontend
 - wake: `http://localhost:3000/api/wake`
 - currency assets: `http://localhost:3000/api/assets?market=all`
 - M1 candles: `http://localhost:3000/api/assets/<asset-uuid>/candles?timeframe=60&limit=120`
+- prepare selected asset: `POST http://localhost:3000/api/assets/prepare` (потребує справжній `initData`)
+- protected diagnostics: `GET http://localhost:3000/api/diagnostics`
 - Telegram session: `http://localhost:3000/api/auth/session` (потребує справжній `initData`)
 
 ## Перевірки
@@ -55,8 +57,9 @@ npm run build
 - Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
 - Етап 5: кеш валютних пар, виплат і доступності Pocket через server-only API.
 - Етап 6: детерміноване ядро Pocket-тиків і 30s/M1/M5 свічок із пакетним записом у Supabase.
+- Pocket collector v1: Demo-only Socket.IO, live каталог/тики, історія, контроль свіжості та перепідключення.
 - Telegram Bot: захищений webhook, `/start`, `/help` і кнопка запуску Mini App.
 
-Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md), [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md) та [`docs/candle-data-stage-6.md`](docs/candle-data-stage-6.md).
+Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md), [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md), [`docs/candle-data-stage-6.md`](docs/candle-data-stage-6.md) та [`docs/pocket-collector-v1.md`](docs/pocket-collector-v1.md).
 
-Живі котировки Pocket ще не підключені й не імітуються. Supabase потребує створеного project та застосування міграцій.
+Живі котировки з’являються лише після server-only налаштування дійсної Pocket Demo-сесії. Дані ніколи не імітуються.

@@ -13,21 +13,22 @@ describe("Pocket public currency catalog", () => {
 
     expect(parsePocketCurrencyCatalog(html)).toEqual([
       expect.objectContaining({
-        pocketSymbol: "EUR/USD",
+        pocketSymbol: "EURUSD",
+        displayName: "EUR/USD",
         baseCurrency: "EUR",
         quoteCurrency: "USD",
         marketType: "regular",
         payoutPercent: 81
       }),
-      expect.objectContaining({ pocketSymbol: "GBP/USD OTC", marketType: "otc", payoutPercent: 92 }),
-      expect.objectContaining({ pocketSymbol: "AUD/CAD OTC", marketType: "otc", payoutPercent: 75.5 })
+      expect.objectContaining({ pocketSymbol: "GBPUSD_otc", displayName: "GBP/USD OTC", marketType: "otc", payoutPercent: 92 }),
+      expect.objectContaining({ pocketSymbol: "AUDCAD_otc", displayName: "AUD/CAD OTC", marketType: "otc", payoutPercent: 75.5 })
     ]);
   });
 
   it("дедуплікує однаковий символ", () => {
     const html = "EUR/USD OTC 80% <span>EUR/USD OTC</span> 91%";
     expect(parsePocketCurrencyCatalog(html)).toEqual([
-      expect.objectContaining({ pocketSymbol: "EUR/USD OTC", payoutPercent: 91 })
+      expect.objectContaining({ pocketSymbol: "EURUSD_otc", displayName: "EUR/USD OTC", payoutPercent: 91 })
     ]);
   });
 

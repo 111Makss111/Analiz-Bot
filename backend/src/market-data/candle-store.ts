@@ -41,6 +41,7 @@ function mapRow(row: CandleRow): StoredCandle {
 export interface CandleStore {
   list(assetId: string, timeframeSeconds: TimeframeSeconds, limit: number): Promise<CandleHistoryResponse>;
   loadCurrent(assetId: string): Promise<MarketCandle[]>;
+  loadCurrentForAssets(assetIds: string[]): Promise<MarketCandle[]>;
   upsert(candles: MarketCandle[]): Promise<void>;
 }
 
@@ -55,6 +56,10 @@ export class UnavailableCandleStore implements CandleStore {
   async upsert(): Promise<void> {}
 
   async loadCurrent(): Promise<MarketCandle[]> {
+    return [];
+  }
+
+  async loadCurrentForAssets(): Promise<MarketCandle[]> {
     return [];
   }
 }
@@ -114,24 +119,30 @@ export class SupabaseCandleStore implements CandleStore {
   }
 
   async loadCurrent(assetId: string): Promise<MarketCandle[]> {
+    return this.loadCurrentForAssets([assetId]);
+  }
+
+  async loadCurrentForAssets(assetIds: string[]): Promise<MarketCandle[]> {
+    if (assetIds.length === 0) return [];
     const { data, error } = await this.client
       .from("candles")
       .select(
         "asset_id,timeframe_seconds,open_time,close_time,last_tick_at,open,high,low,close,tick_count,is_complete,received_at"
       )
-      .eq("asset_id", assetId)
+      .in("asset_id", assetIds)
       .eq("is_complete", false)
       .in("timeframe_seconds", [30, 60, 300])
       .order("open_time", { ascending: false })
-      .limit(30);
+      .limit(Math.min(500, assetIds.length * 3));
 
     if (error) throw new Error(`Supabase current candle query failed: ${error.message}`);
 
-    const latestByTimeframe = new Map<TimeframeSeconds, MarketCandle>();
+    const latestByAssetTimeframe = new Map<string, MarketCandle>();
     for (const row of (data ?? []) as CandleRow[]) {
       const candle = mapRow(row);
-      if (latestByTimeframe.has(candle.timeframeSeconds)) continue;
-      latestByTimeframe.set(candle.timeframeSeconds, {
+      const key = `${candle.assetId}:${candle.timeframeSeconds}`;
+      if (latestByAssetTimeframe.has(key)) continue;
+      latestByAssetTimeframe.set(key, {
         assetId: candle.assetId,
         timeframeSeconds: candle.timeframeSeconds,
         openTimeMs: Date.parse(candle.openTime),
@@ -145,6 +156,6 @@ export class SupabaseCandleStore implements CandleStore {
         isComplete: candle.isComplete
       });
     }
-    return [...latestByTimeframe.values()];
+    return [...latestByAssetTimeframe.values()];
   }
 }

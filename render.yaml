@@ -24,3 +24,15 @@ services:
         sync: false
       - key: SUPABASE_SECRET_KEY
         sync: false
+      - key: DIAGNOSTICS_SECRET
+        generateValue: true
+      - key: POCKET_COLLECTOR_ENABLED
+        value: true
+      - key: POCKET_AUTH_PACKET
+        sync: false
+      - key: POCKET_DEMO_REGION
+        value: EU
+      - key: POCKET_MAX_ASSETS
+        value: 80
+      - key: POCKET_STALE_AFTER_MS
+        value: 15000

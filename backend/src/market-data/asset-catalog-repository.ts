@@ -49,6 +49,9 @@ function mapAssetRow(row: AssetRow, now: number): AssetSummary {
     : "error";
   const lastQuoteAt = nullableString(row.last_quote_at);
   const catalogUpdatedAt = nullableString(row.catalog_updated_at);
+  const quoteAgeMs = ageMs(lastQuoteAt, now);
+  const effectiveDataState =
+    dataState === "ready" && (quoteAgeMs === null || quoteAgeMs > 15_000) ? "stale" : dataState;
 
   return {
     id: String(row.id),
@@ -59,10 +62,10 @@ function mapAssetRow(row: AssetRow, now: number): AssetSummary {
     marketType,
     isAvailable: row.is_available === true,
     payoutPercent: nullableNumber(row.payout_percent),
-    dataState,
+    dataState: effectiveDataState,
     lastQuote: nullableNumber(row.last_quote),
     lastQuoteAt,
-    quoteAgeMs: ageMs(lastQuoteAt, now),
+    quoteAgeMs,
     catalogUpdatedAt,
     catalogAgeMs: ageMs(catalogUpdatedAt, now)
   };

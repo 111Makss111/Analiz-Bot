@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   checkHealth,
   fetchAssets,
+  prepareAsset,
   verifySession,
   type AssetSummary,
   type AssetsResponse,
@@ -100,17 +101,26 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    checkHealth(controller.signal)
-      .then((response) => {
-        setHealth(response);
-        setConnection("online");
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
-        setConnection("offline");
-      });
-    return () => controller.abort();
+    let controller = new AbortController();
+    const refresh = () => {
+      controller.abort();
+      controller = new AbortController();
+      checkHealth(controller.signal)
+        .then((response) => {
+          setHealth(response);
+          setConnection("online");
+        })
+        .catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setConnection("offline");
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 10_000);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -127,6 +137,29 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
       });
     return () => controller.abort();
   }, [catalogReloadToken]);
+
+  useEffect(() => {
+    if (!selectedAssetId) return;
+    let controller = new AbortController();
+    const interval = window.setInterval(() => {
+      controller.abort();
+      controller = new AbortController();
+      fetchAssets(controller.signal)
+        .then((response) => setCatalog(response))
+        .catch(() => undefined);
+    }, 3_000);
+    return () => {
+      window.clearInterval(interval);
+      controller.abort();
+    };
+  }, [selectedAssetId]);
+
+  useEffect(() => {
+    if (!selectedAssetId || session !== "verified" || !launchContext.initData) return;
+    void prepareAsset(selectedAssetId, launchContext.initData).catch(() =>
+      setToast("Актив обрано, але Pocket ще не готовий")
+    );
+  }, [launchContext.initData, selectedAssetId, session]);
 
   useEffect(() => {
     if (launchContext.environment !== "telegram" || !launchContext.initData) return;
@@ -267,7 +300,7 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
               <div><span><i className={`mini-dot mini-dot--${connection}`} />Render API</span><strong>{connection === "online" ? "Працює" : "Недоступний"}</strong></div>
               <div><span><i className={`mini-dot mini-dot--${session === "verified" ? "online" : "checking"}`} />Telegram</span><strong>{session === "verified" ? "Підтверджено" : "Перевірка"}</strong></div>
               <div><span><i className={`mini-dot mini-dot--${health?.database === "configured" ? "online" : "checking"}`} />Supabase</span><strong>{health?.database === "configured" ? "Підключено" : "Очікує"}</strong></div>
-              <div><span><i className="mini-dot mini-dot--waiting" />Pocket</span><strong>Не підключено</strong></div>
+              <div><span><i className={`mini-dot mini-dot--${health?.pocket === "ready" ? "online" : health?.pocket === "error" ? "offline" : "waiting"}`} />Pocket</span><strong>{health?.pocket === "ready" ? "Підключено" : health?.pocket === "error" ? "Помилка сесії" : health?.pocket === "not_configured" ? "Потрібна сесія" : "Підключення"}</strong></div>
             </div>
             <div className="settings-panel">
               <button onClick={() => setHaptics((value) => !value)} type="button"><span><strong>Тактильний відгук</strong><small>Для основних дій</small></span><i className={haptics ? "switch on" : "switch"} /></button>

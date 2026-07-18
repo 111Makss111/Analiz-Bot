@@ -31,7 +31,7 @@ describe("AssetCatalogService", () => {
       listCurrencyAssets: vi.fn(async () => [
         {
           id: "asset-1",
-          pocketSymbol: "EUR/USD OTC",
+          pocketSymbol: "EURUSD_otc",
           displayName: "EUR/USD OTC",
           baseCurrency: "EUR",
           quoteCurrency: "USD",
@@ -56,7 +56,7 @@ describe("AssetCatalogService", () => {
 
     expect(response.status).toBe("stale");
     expect(response.updatedAt).toBe(snapshot.fetchedAt);
-    expect(response.assets[0]?.pocketSymbol).toBe("EUR/USD OTC");
+    expect(response.assets[0]?.pocketSymbol).toBe("EURUSD_otc");
     expect(repository.listCurrencyAssets).toHaveBeenCalledWith({ market: "otc", search: "EUR" });
   });
 });
