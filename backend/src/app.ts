@@ -1,5 +1,17 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
+import { SupabaseAnalysisDataSource } from "./analysis/analysis-data-source.js";
+import {
+  AnalysisError,
+  AnalysisService,
+  UnavailableAnalysisRuntime,
+  type AnalysisRuntime
+} from "./analysis/analysis-service.js";
+import type {
+  AnalysisExpirationMinutes,
+  AnalyzeRequest,
+  AnalyzeResponse
+} from "./analysis/types.js";
 import type { AppConfig } from "./config.js";
 import { createSupabaseAdminClient } from "./database/client.js";
 import { AssetCatalogService, type AssetCatalog } from "./market-data/asset-catalog-service.js";
@@ -43,6 +55,7 @@ type AppDependencies = {
   assetCatalog?: AssetCatalog;
   candleStore?: CandleStore;
   pocketCollector?: PocketCollectorRuntime;
+  analysisRuntime?: AnalysisRuntime;
 };
 
 type AssetsQuerystring = {
@@ -53,6 +66,7 @@ type AssetsQuerystring = {
 type CandlesParams = { assetId: string };
 type CandlesQuerystring = { timeframe?: string; limit?: string };
 type PrepareAssetBody = { assetId?: string };
+type AnalyzeBody = { assetId?: string; expirationMinutes?: number };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -98,6 +112,11 @@ export async function createApp(
           onError: (error, message) => app.log.warn({ err: error }, message)
         })
       : new UnavailablePocketCollector());
+  const analysisRuntime =
+    dependencies.analysisRuntime ??
+    (database
+      ? new AnalysisService(new SupabaseAnalysisDataSource(database, candleStore))
+      : new UnavailableAnalysisRuntime());
 
   app.addHook("onReady", async () => {
     assetCatalog.start();
@@ -238,6 +257,79 @@ export async function createApp(
       .header("Cache-Control", "no-store")
       .send(result);
   });
+
+  app.post<{ Body: AnalyzeBody; Reply: AnalyzeResponse }>(
+    "/api/analyze",
+    async (request, reply) => {
+      const header = request.headers["x-telegram-init-data"];
+      const rawInitData = Array.isArray(header) ? "" : (header ?? "");
+      try {
+        verifyTelegramInitData(rawInitData, {
+          botToken: config.telegramBotToken,
+          maxAgeSeconds: config.telegramInitDataTtlSeconds
+        });
+      } catch (error) {
+        if (!(error instanceof TelegramInitDataError)) throw error;
+        return reply.code(401).header("Cache-Control", "no-store").send({
+          ok: false,
+          error: { code: error.code, message: error.message }
+        });
+      }
+
+      const assetId = request.body?.assetId ?? "";
+      if (!UUID_PATTERN.test(assetId)) {
+        return reply.code(400).header("Cache-Control", "no-store").send({
+          ok: false,
+          error: { code: "INVALID_ASSET_ID", message: "assetId має бути UUID" }
+        });
+      }
+      const expirationMinutes = request.body?.expirationMinutes;
+      if (!(expirationMinutes === 1 || expirationMinutes === 2 || expirationMinutes === 3)) {
+        return reply.code(400).header("Cache-Control", "no-store").send({
+          ok: false,
+          error: { code: "INVALID_EXPIRATION", message: "Експірація має бути 1, 2 або 3 хвилини" }
+        });
+      }
+
+      const collectorStatus = pocketCollector.status();
+      if (!collectorStatus.connected || !collectorStatus.authenticated) {
+        return reply.code(503).header("Cache-Control", "no-store").send({
+          ok: false,
+          error: {
+            code: "POCKET_NOT_READY",
+            message: "З'єднання з Pocket ще не готове; повторіть за кілька секунд"
+          }
+        });
+      }
+
+      const analyzeRequest: AnalyzeRequest = {
+        assetId,
+        expirationMinutes: expirationMinutes as AnalysisExpirationMinutes
+      };
+      try {
+        const [prepared, analysis] = await Promise.all([
+          pocketCollector.prepareAsset(assetId),
+          analysisRuntime.analyze(analyzeRequest)
+        ]);
+        if (!prepared.ok) {
+          return reply
+            .code(prepared.code === "POCKET_ASSET_NOT_FOUND" ? 404 : 503)
+            .header("Cache-Control", "no-store")
+            .send({
+              ok: false,
+              error: { code: prepared.code, message: prepared.message }
+            });
+        }
+        return reply.header("Cache-Control", "no-store").send({ ok: true, analysis });
+      } catch (error) {
+        if (!(error instanceof AnalysisError)) throw error;
+        return reply.code(error.statusCode).header("Cache-Control", "no-store").send({
+          ok: false,
+          error: { code: error.code, message: error.message }
+        });
+      }
+    }
+  );
 
   app.get("/api/auth/session", async (request, reply) => {
     const header = request.headers["x-telegram-init-data"];
