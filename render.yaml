@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: market-pulse-backend
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build --workspace backend
+    startCommand: npm run start --workspace backend
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_INIT_DATA_TTL_SECONDS
+        value: 86400

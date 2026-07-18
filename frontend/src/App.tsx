@@ -1,22 +1,23 @@
 import { useEffect, useState } from "react";
+import { checkHealth, verifySession } from "./api";
+import { browserLaunchContext, type TelegramLaunchContext } from "./telegram";
 
 type ConnectionState = "checking" | "online" | "offline";
 type Expiration = 1 | 2 | 3;
+type SessionState = "browser" | "checking" | "verified" | "rejected";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
-
-export function App() {
+export function App({ launchContext = browserLaunchContext }: { launchContext?: TelegramLaunchContext }) {
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [expiration, setExpiration] = useState<Expiration>(1);
+  const [session, setSession] = useState<SessionState>(
+    launchContext.environment === "telegram" ? "checking" : "browser"
+  );
 
   useEffect(() => {
     const controller = new AbortController();
 
-    fetch(`${apiBaseUrl}/api/health`, { signal: controller.signal })
-      .then((response) => {
-        if (!response.ok) throw new Error("Backend unavailable");
-        setConnection("online");
-      })
+    checkHealth(controller.signal)
+      .then(() => setConnection("online"))
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setConnection("offline");
@@ -24,6 +25,20 @@ export function App() {
 
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (launchContext.environment !== "telegram" || !launchContext.initData) return;
+    const controller = new AbortController();
+
+    verifySession(launchContext.initData, controller.signal)
+      .then(() => setSession("verified"))
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setSession("rejected");
+      });
+
+    return () => controller.abort();
+  }, [launchContext]);
 
   return (
     <div className="app-shell">
@@ -49,6 +64,19 @@ export function App() {
             </strong>
           </div>
         </section>
+
+        {session !== "verified" && (
+          <section className={`telegram-card telegram-card--${session}`} aria-live="polite">
+            <span className="label">Telegram</span>
+            <strong>
+              {session === "checking"
+                ? "Перевіряємо сесію"
+                : session === "rejected"
+                  ? "Сесію не підтверджено. Відкрийте Mini App знову."
+                  : "Локальний перегляд — приватні дані недоступні"}
+            </strong>
+          </section>
+        )}
 
         <section className="analysis-card">
           <div className="section-heading">

@@ -36,6 +36,7 @@ npm run dev:frontend
 - backend: `http://localhost:3000`
 - health: `http://localhost:3000/api/health`
 - wake: `http://localhost:3000/api/wake`
+- Telegram session: `http://localhost:3000/api/auth/session` (потребує справжній `initData`)
 
 ## Перевірки
 
@@ -45,6 +46,11 @@ npm test
 npm run build
 ```
 
-## Межі першого етапу
+## Поточний стан
 
-Етап 1 створює чисту структуру, локальний запуск і тестовані базові endpoints. Підключення Telegram, Supabase та Pocket не імітується і буде реалізоване окремими етапами.
+- Етап 1: чиста структура, локальний запуск і базові endpoints.
+- Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
+
+Інструкція розгортання: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md).
+
+Supabase та Pocket ще не підключені й не імітуються.
