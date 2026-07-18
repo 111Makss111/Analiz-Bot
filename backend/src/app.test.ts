@@ -9,7 +9,9 @@ const config: AppConfig = {
   port: 3000,
   frontendOrigin: "http://localhost:5173",
   telegramBotToken: "123456789:test-token",
-  telegramInitDataTtlSeconds: 86_400
+  telegramInitDataTtlSeconds: 86_400,
+  supabaseUrl: "",
+  supabaseSecretKey: ""
 };
 
 const apps: Awaited<ReturnType<typeof createApp>>[] = [];

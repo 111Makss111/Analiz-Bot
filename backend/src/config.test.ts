@@ -4,7 +4,12 @@ import { loadConfig } from "./config.js";
 describe("loadConfig", () => {
   it("не дозволяє production без Bot Token", () => {
     expect(() =>
-      loadConfig({ NODE_ENV: "production", FRONTEND_ORIGIN: "https://market-pulse.vercel.app" })
+      loadConfig({
+        NODE_ENV: "production",
+        FRONTEND_ORIGIN: "https://market-pulse.vercel.app",
+        SUPABASE_URL: "https://example.supabase.co",
+        SUPABASE_SECRET_KEY: "sb_secret_test"
+      })
     ).toThrow("TELEGRAM_BOT_TOKEN");
   });
 
@@ -13,7 +18,9 @@ describe("loadConfig", () => {
       loadConfig({
         NODE_ENV: "production",
         FRONTEND_ORIGIN: "http://market-pulse.example",
-        TELEGRAM_BOT_TOKEN: "test-token"
+        TELEGRAM_BOT_TOKEN: "test-token",
+        SUPABASE_URL: "https://example.supabase.co",
+        SUPABASE_SECRET_KEY: "sb_secret_test"
       })
     ).toThrow("HTTPS");
   });
@@ -22,10 +29,18 @@ describe("loadConfig", () => {
     const config = loadConfig({
       NODE_ENV: "production",
       FRONTEND_ORIGIN: "https://market-pulse.vercel.app",
-      TELEGRAM_BOT_TOKEN: "test-token"
+      TELEGRAM_BOT_TOKEN: "test-token",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_SECRET_KEY: "sb_secret_test"
     });
 
     expect(config.frontendOrigin).toBe("https://market-pulse.vercel.app");
     expect(config.telegramInitDataTtlSeconds).toBe(86_400);
+  });
+
+  it("не дозволяє часткову Supabase-конфігурацію", () => {
+    expect(() => loadConfig({ SUPABASE_URL: "https://example.supabase.co" })).toThrow(
+      "потрібно задавати разом"
+    );
   });
 });

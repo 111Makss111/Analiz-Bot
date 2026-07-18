@@ -18,3 +18,7 @@ services:
         sync: false
       - key: TELEGRAM_INIT_DATA_TTL_SECONDS
         value: 86400
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false

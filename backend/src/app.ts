@@ -1,16 +1,19 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
+import { createSupabaseAdminClient } from "./database/client.js";
 import { TelegramInitDataError, verifyTelegramInitData } from "./telegram/init-data.js";
 
 export type HealthResponse = {
   ok: true;
   service: "market-pulse-backend";
   status: "ready";
+  database: "configured" | "not_configured";
   timestamp: string;
 };
 
 export async function createApp(config: AppConfig): Promise<FastifyInstance> {
+  const database = createSupabaseAdminClient(config);
   const app = Fastify({
     logger: config.nodeEnv !== "test",
     trustProxy: true
@@ -28,6 +31,7 @@ export async function createApp(config: AppConfig): Promise<FastifyInstance> {
     ok: true,
     service: "market-pulse-backend",
     status: "ready",
+    database: database ? "configured" : "not_configured",
     timestamp: new Date().toISOString()
   }));
 
