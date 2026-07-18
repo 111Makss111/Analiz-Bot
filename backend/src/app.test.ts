@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
+import type { AssetCatalog } from "./market-data/asset-catalog-service.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -63,6 +64,61 @@ describe("system endpoints", () => {
       service: "market-pulse-backend",
       status: "ready"
     });
+  });
+
+  it("повертає валютний каталог через короткий server API", async () => {
+    const assetCatalog: AssetCatalog = {
+      start: vi.fn(),
+      stop: vi.fn(),
+      requestRefresh: vi.fn(),
+      list: vi.fn(async () => ({
+        ok: true,
+        category: "currency",
+        status: "ready",
+        source: "supabase-cache",
+        updatedAt: "2026-07-18T15:00:00.000Z",
+        assets: [
+          {
+            id: "asset-1",
+            pocketSymbol: "EUR/USD OTC",
+            displayName: "EUR/USD OTC",
+            baseCurrency: "EUR",
+            quoteCurrency: "USD",
+            marketType: "otc",
+            isAvailable: true,
+            payoutPercent: 92,
+            dataState: "warming",
+            lastQuote: null,
+            lastQuoteAt: null,
+            quoteAgeMs: null,
+            catalogUpdatedAt: "2026-07-18T15:00:00.000Z",
+            catalogAgeMs: 1000
+          }
+        ]
+      }))
+    };
+    const app = await createApp(config, { assetCatalog });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/api/assets?market=otc&search=EUR" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toContain("stale-while-revalidate");
+    expect(response.json()).toMatchObject({
+      ok: true,
+      status: "ready",
+      assets: [{ pocketSymbol: "EUR/USD OTC", payoutPercent: 92 }]
+    });
+    expect(assetCatalog.list).toHaveBeenCalledWith({ market: "otc", search: "EUR" });
+  });
+
+  it("відхиляє невідомий market filter", async () => {
+    const app = await createApp(config);
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/api/assets?market=crypto" });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "INVALID_MARKET_FILTER" } });
   });
 
   it("не додає CORS-дозвіл для стороннього origin", async () => {

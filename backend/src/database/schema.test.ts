@@ -1,12 +1,16 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 import { describe, expect, it } from "vitest";
 
-const migration = readFileSync(
-  new URL("../../../supabase/migrations/20260718110000_initial_market_pulse_schema.sql", import.meta.url),
-  "utf8"
+const migrationsDirectory = new URL("../../../supabase/migrations/", import.meta.url);
+const migrationFiles = readdirSync(migrationsDirectory)
+  .filter((file) => file.endsWith(".sql"))
+  .sort();
+const migrations = migrationFiles.map((file) =>
+  readFileSync(new URL(file, migrationsDirectory), "utf8")
 );
+const migration = migrations.join("\n");
 
 const protectedTables = [
   "telegram_users",
@@ -32,7 +36,7 @@ describe("initial Supabase migration", () => {
         create role authenticated nologin;
         create role service_role nologin;
       `);
-      await database.exec(migration);
+      for (const sql of migrations) await database.exec(sql);
 
       const result = await database.query<{ table_name: string; rls_enabled: boolean }>(`
         select c.relname as table_name, c.relrowsecurity as rls_enabled
@@ -66,5 +70,11 @@ describe("initial Supabase migration", () => {
 
   it("не включає INVALID, CANCELLED або DRAW у знаменник win rate", () => {
     expect(migration).toContain("result in ('win', 'loss')");
+  });
+
+  it("додає атомарний кеш валютного каталогу без доступу клієнтських ролей", () => {
+    expect(migration).toContain("create function public.replace_currency_asset_catalog");
+    expect(migration).toContain("asset_category = 'currency'");
+    expect(migration).toContain("from public, anon, authenticated");
   });
 });

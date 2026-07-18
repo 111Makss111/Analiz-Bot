@@ -36,6 +36,7 @@ npm run dev:frontend
 - backend: `http://localhost:3000`
 - health: `http://localhost:3000/api/health`
 - wake: `http://localhost:3000/api/wake`
+- currency assets: `http://localhost:3000/api/assets?market=all`
 - Telegram session: `http://localhost:3000/api/auth/session` (потребує справжній `initData`)
 
 ## Перевірки
@@ -51,8 +52,9 @@ npm run build
 - Етап 1: чиста структура, локальний запуск і базові endpoints.
 - Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
 - Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
+- Етап 5: кеш валютних пар, виплат і доступності Pocket через server-only API.
 - Telegram Bot: захищений webhook, `/start`, `/help` і кнопка запуску Mini App.
 
-Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md) та [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md).
+Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md) та [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md).
 
-Pocket ще не підключений і не імітується. Supabase потребує створеного project та застосування міграції.
+Живі котировки Pocket ще не підключені й не імітуються. Supabase потребує створеного project та застосування міграцій.
