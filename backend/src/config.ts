@@ -5,6 +5,8 @@ export type AppConfig = {
   frontendOrigin: string;
   telegramBotToken: string;
   telegramInitDataTtlSeconds: number;
+  supabaseUrl: string;
+  supabaseSecretKey: string;
 };
 
 function readPort(value: string | undefined): number {
@@ -48,6 +50,36 @@ function readFrontendOrigin(value: string | undefined, nodeEnv: AppConfig["nodeE
   return origin;
 }
 
+function readSupabaseConfig(
+  env: NodeJS.ProcessEnv,
+  nodeEnv: AppConfig["nodeEnv"]
+): Pick<AppConfig, "supabaseUrl" | "supabaseSecretKey"> {
+  const supabaseUrl = env.SUPABASE_URL ?? "";
+  const supabaseSecretKey = env.SUPABASE_SECRET_KEY ?? "";
+
+  if ((supabaseUrl.length === 0) !== (supabaseSecretKey.length === 0)) {
+    throw new Error("SUPABASE_URL і SUPABASE_SECRET_KEY потрібно задавати разом");
+  }
+
+  if (nodeEnv === "production" && supabaseUrl.length === 0) {
+    throw new Error("Supabase configuration обов'язкова у production");
+  }
+
+  if (supabaseUrl.length > 0) {
+    let url: URL;
+    try {
+      url = new URL(supabaseUrl);
+    } catch {
+      throw new Error("SUPABASE_URL має бути коректним URL");
+    }
+    if (url.protocol !== "https:" || url.origin !== supabaseUrl) {
+      throw new Error("SUPABASE_URL має бути HTTPS origin без шляху");
+    }
+  }
+
+  return { supabaseUrl, supabaseSecretKey };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nodeEnv = env.NODE_ENV ?? "development";
 
@@ -57,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const validatedNodeEnv = nodeEnv as AppConfig["nodeEnv"];
   const telegramBotToken = env.TELEGRAM_BOT_TOKEN ?? "";
+  const supabase = readSupabaseConfig(env, validatedNodeEnv);
 
   if (validatedNodeEnv === "production" && telegramBotToken.length === 0) {
     throw new Error("TELEGRAM_BOT_TOKEN обов'язковий у production");
@@ -72,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       env.TELEGRAM_INIT_DATA_TTL_SECONDS,
       86_400,
       "TELEGRAM_INIT_DATA_TTL_SECONDS"
-    )
+    ),
+    ...supabase
   };
 }

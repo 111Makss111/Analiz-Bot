@@ -50,7 +50,8 @@ npm run build
 
 - Етап 1: чиста структура, локальний запуск і базові endpoints.
 - Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
+- Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
 
-Інструкція розгортання: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md).
+Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md) та [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md).
 
-Supabase та Pocket ще не підключені й не імітуються.
+Pocket ще не підключений і не імітується. Supabase потребує створеного project та застосування міграції.
