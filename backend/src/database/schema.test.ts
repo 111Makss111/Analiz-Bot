@@ -63,6 +63,83 @@ describe("initial Supabase migration", () => {
     expect(migration).not.toMatch(/create policy/i);
   });
 
+  it("атомарно записує Pocket tick, M1 candle і останню котировку без дублів", async () => {
+    const database = new PGlite({ extensions: { pgcrypto } });
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+    const ticks = JSON.stringify([
+      {
+        asset_id: assetId,
+        pocket_time: "2026-07-18T12:00:10.000Z",
+        received_at: "2026-07-18T12:00:10.080Z",
+        price: 1.1,
+        pocket_sequence: "tick-1"
+      }
+    ]);
+    const candles = JSON.stringify([
+      {
+        asset_id: assetId,
+        timeframe_seconds: 60,
+        open_time: "2026-07-18T12:00:00.000Z",
+        close_time: "2026-07-18T12:01:00.000Z",
+        last_tick_at: "2026-07-18T12:00:10.000Z",
+        open: 1.1,
+        high: 1.1,
+        low: 1.1,
+        close: 1.1,
+        tick_count: 1,
+        is_complete: false
+      }
+    ]);
+    const quotes = JSON.stringify([
+      {
+        asset_id: assetId,
+        pocket_time: "2026-07-18T12:00:10.000Z",
+        received_at: "2026-07-18T12:00:10.080Z",
+        price: 1.1
+      }
+    ]);
+
+    try {
+      await database.exec(`
+        create schema if not exists extensions;
+        create role anon nologin;
+        create role authenticated nologin;
+        create role service_role nologin;
+      `);
+      for (const sql of migrations) await database.exec(sql);
+      await database.exec(`
+        insert into public.assets (
+          id, pocket_symbol, display_name, market_type, base_currency, quote_currency
+        ) values (
+          '${assetId}', 'EUR/USD', 'EUR/USD', 'regular', 'EUR', 'USD'
+        );
+        select public.ingest_pocket_market_data(
+          '${ticks}'::jsonb,
+          '${candles}'::jsonb,
+          '${quotes}'::jsonb
+        );
+        select public.ingest_pocket_market_data(
+          '${ticks}'::jsonb,
+          '${candles}'::jsonb,
+          '${quotes}'::jsonb
+        );
+      `);
+
+      const tickCount = await database.query<{ count: bigint }>("select count(*) from public.ticks");
+      const candleCount = await database.query<{ count: bigint }>("select count(*) from public.candles");
+      const asset = await database.query<{ last_quote: string; data_state: string }>(
+        `select last_quote, data_state from public.assets where id = '${assetId}'`
+      );
+
+      expect(Number(tickCount.rows[0]?.count)).toBe(1);
+      expect(Number(candleCount.rows[0]?.count)).toBe(1);
+      expect(Number(asset.rows[0]?.last_quote)).toBe(1.1);
+      expect(asset.rows[0]?.data_state).toBe("ready");
+    } finally {
+      await database.close();
+    }
+  }, 30_000);
+
   it("відокремлює OTC, INVALID і CANCELLED у типах даних", () => {
     expect(migration).toContain("market_type as enum ('regular', 'otc')");
     expect(migration).toContain("prediction_result as enum ('win', 'loss', 'draw', 'invalid', 'cancelled')");
@@ -76,5 +153,12 @@ describe("initial Supabase migration", () => {
     expect(migration).toContain("create function public.replace_currency_asset_catalog");
     expect(migration).toContain("asset_category = 'currency'");
     expect(migration).toContain("from public, anon, authenticated");
+  });
+
+  it("додає атомарний server-only запис Pocket ticks і candles", () => {
+    expect(migration).toContain("create function public.ingest_pocket_market_data");
+    expect(migration).toContain("ticks_deduplicate_identical_samples");
+    expect(migration).toContain("tick_count");
+    expect(migration).toContain("Number of accepted Pocket ticks");
   });
 });

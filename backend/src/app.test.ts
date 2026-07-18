@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import type { AssetCatalog } from "./market-data/asset-catalog-service.js";
+import type { CandleStore } from "./market-data/candle-store.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -119,6 +120,65 @@ describe("system endpoints", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "INVALID_MARKET_FILTER" } });
+  });
+
+  it("повертає збережені M1 свічки вибраного активу", async () => {
+    const candleStore: CandleStore = {
+      upsert: vi.fn(async () => undefined),
+      loadCurrent: vi.fn(async () => []),
+      list: vi.fn(async (assetId, timeframeSeconds) => ({
+        ok: true,
+        status: "ready",
+        assetId,
+        timeframeSeconds,
+        candles: [
+          {
+            assetId,
+            timeframeSeconds,
+            openTime: "2026-07-18T12:00:00.000Z",
+            closeTime: "2026-07-18T12:01:00.000Z",
+            lastTickAt: "2026-07-18T12:00:59.000Z",
+            open: 1.1,
+            high: 1.2,
+            low: 1.05,
+            close: 1.15,
+            tickCount: 12,
+            isComplete: true,
+            receivedAt: "2026-07-18T12:01:00.100Z"
+          }
+        ]
+      }))
+    };
+    const app = await createApp(config, { candleStore });
+    apps.push(app);
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/assets/${assetId}/candles?timeframe=60&limit=120`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: "ready",
+      timeframeSeconds: 60,
+      candles: [{ open: 1.1, close: 1.15, isComplete: true }]
+    });
+    expect(candleStore.list).toHaveBeenCalledWith(assetId, 60, 120);
+  });
+
+  it("відхиляє пошкоджені candle query parameters", async () => {
+    const app = await createApp(config);
+    apps.push(app);
+
+    const badAsset = await app.inject({ method: "GET", url: "/api/assets/not-a-uuid/candles" });
+    const badTimeframe = await app.inject({
+      method: "GET",
+      url: "/api/assets/123e4567-e89b-42d3-a456-426614174000/candles?timeframe=15"
+    });
+
+    expect(badAsset.statusCode).toBe(400);
+    expect(badTimeframe.statusCode).toBe(400);
   });
 
   it("не додає CORS-дозвіл для стороннього origin", async () => {

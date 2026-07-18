@@ -48,3 +48,51 @@ export type CurrencyCatalogSnapshot = {
   fetchedAt: string;
   assets: CurrencyCatalogAsset[];
 };
+
+export const SUPPORTED_TIMEFRAMES = [30, 60, 300] as const;
+export type TimeframeSeconds = (typeof SUPPORTED_TIMEFRAMES)[number];
+
+export type PocketTick = {
+  assetId: string;
+  price: number;
+  pocketTimeMs: number;
+  receivedAtMs: number;
+  sequence: string | null;
+};
+
+export type MarketCandle = {
+  assetId: string;
+  timeframeSeconds: TimeframeSeconds;
+  openTimeMs: number;
+  closeTimeMs: number;
+  lastTickTimeMs: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  tickCount: number;
+  isComplete: boolean;
+};
+
+export type StoredCandle = {
+  assetId: string;
+  timeframeSeconds: TimeframeSeconds;
+  openTime: string;
+  closeTime: string;
+  lastTickAt: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  tickCount: number;
+  isComplete: boolean;
+  receivedAt: string;
+};
+
+export type CandleHistoryResponse = {
+  ok: true;
+  status: "ready" | "warming" | "unavailable";
+  assetId: string;
+  timeframeSeconds: TimeframeSeconds;
+  candles: StoredCandle[];
+};
