@@ -1,9 +1,14 @@
+import { createHash } from "node:crypto";
+
 export type AppConfig = {
   nodeEnv: "development" | "test" | "production";
   host: string;
   port: number;
   frontendOrigin: string;
   telegramBotToken: string;
+  telegramWebhookSecret: string;
+  telegramMiniAppUrl: string;
+  backendPublicUrl: string;
   telegramInitDataTtlSeconds: number;
   supabaseUrl: string;
   supabaseSecretKey: string;
@@ -80,6 +85,26 @@ function readSupabaseConfig(
   return { supabaseUrl, supabaseSecretKey };
 }
 
+function readHttpsOrigin(value: string, name: string, required: boolean): string {
+  if (!value) {
+    if (required) throw new Error(`${name} обов'язковий у production`);
+    return "";
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} має бути коректним URL`);
+  }
+
+  if (url.protocol !== "https:" || url.origin !== value) {
+    throw new Error(`${name} має бути HTTPS origin без шляху або кінцевого слеша`);
+  }
+
+  return value;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nodeEnv = env.NODE_ENV ?? "development";
 
@@ -89,18 +114,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const validatedNodeEnv = nodeEnv as AppConfig["nodeEnv"];
   const telegramBotToken = env.TELEGRAM_BOT_TOKEN ?? "";
+  const providedWebhookSecret = env.TELEGRAM_WEBHOOK_SECRET ?? "";
   const supabase = readSupabaseConfig(env, validatedNodeEnv);
 
   if (validatedNodeEnv === "production" && telegramBotToken.length === 0) {
     throw new Error("TELEGRAM_BOT_TOKEN обов'язковий у production");
   }
 
+  if (
+    providedWebhookSecret.length > 0 &&
+    (!/^[A-Za-z0-9_-]+$/.test(providedWebhookSecret) || providedWebhookSecret.length > 256)
+  ) {
+    throw new Error("TELEGRAM_WEBHOOK_SECRET містить недозволені символи або завеликий");
+  }
+
+  if (validatedNodeEnv === "production" && providedWebhookSecret.length > 0 && providedWebhookSecret.length < 32) {
+    throw new Error("TELEGRAM_WEBHOOK_SECRET повинен містити щонайменше 32 символи у production");
+  }
+
+  const telegramWebhookSecret =
+    providedWebhookSecret ||
+    (validatedNodeEnv === "production" && telegramBotToken
+      ? createHash("sha256").update(`market-pulse-webhook:${telegramBotToken}`).digest("hex")
+      : "");
+
+  const frontendOrigin = readFrontendOrigin(env.FRONTEND_ORIGIN, validatedNodeEnv);
+  const backendPublicUrl = readHttpsOrigin(
+    env.RENDER_EXTERNAL_URL ?? env.BACKEND_PUBLIC_URL ?? "",
+    "BACKEND_PUBLIC_URL",
+    validatedNodeEnv === "production"
+  );
+
   return {
     nodeEnv: validatedNodeEnv,
     host: env.HOST ?? "0.0.0.0",
     port: readPort(env.PORT),
-    frontendOrigin: readFrontendOrigin(env.FRONTEND_ORIGIN, validatedNodeEnv),
+    frontendOrigin,
     telegramBotToken,
+    telegramWebhookSecret,
+    telegramMiniAppUrl: readHttpsOrigin(
+      env.TELEGRAM_MINI_APP_URL ?? (validatedNodeEnv === "production" ? frontendOrigin : ""),
+      "TELEGRAM_MINI_APP_URL",
+      validatedNodeEnv === "production"
+    ),
+    backendPublicUrl,
     telegramInitDataTtlSeconds: readPositiveInteger(
       env.TELEGRAM_INIT_DATA_TTL_SECONDS,
       86_400,

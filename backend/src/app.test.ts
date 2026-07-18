@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 
@@ -9,6 +9,9 @@ const config: AppConfig = {
   port: 3000,
   frontendOrigin: "http://localhost:5173",
   telegramBotToken: "123456789:test-token",
+  telegramWebhookSecret: "test_webhook_secret_123456789012345",
+  telegramMiniAppUrl: "",
+  backendPublicUrl: "",
   telegramInitDataTtlSeconds: 86_400,
   supabaseUrl: "",
   supabaseSecretKey: ""
@@ -103,5 +106,38 @@ describe("system endpoints", () => {
       ok: true,
       user: { id: 42, firstName: "Марія", username: "maria" }
     });
+  });
+
+  it("відхиляє webhook без правильного Telegram secret", async () => {
+    const sendStartMessage = vi.fn();
+    const app = await createApp(config, {
+      telegramBotApi: { sendStartMessage, configureWebhook: vi.fn() }
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/telegram/webhook",
+      payload: { message: { chat: { id: 42, type: "private" }, text: "/start" } }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(sendStartMessage).not.toHaveBeenCalled();
+  });
+
+  it("відповідає на підтверджений /start", async () => {
+    const sendStartMessage = vi.fn().mockResolvedValue(undefined);
+    const app = await createApp(config, {
+      telegramBotApi: { sendStartMessage, configureWebhook: vi.fn() }
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/telegram/webhook",
+      headers: { "x-telegram-bot-api-secret-token": config.telegramWebhookSecret },
+      payload: { message: { chat: { id: 42, type: "private" }, text: "/start" } }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(sendStartMessage).toHaveBeenCalledWith(42);
   });
 });

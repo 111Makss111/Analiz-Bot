@@ -3,17 +3,28 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
 import { createSupabaseAdminClient } from "./database/client.js";
 import { TelegramInitDataError, verifyTelegramInitData } from "./telegram/init-data.js";
+import { createTelegramBotApi, type TelegramBotApi } from "./telegram/bot-api.js";
+import { parseWebhookCommand, verifyWebhookSecret } from "./telegram/webhook.js";
 
 export type HealthResponse = {
   ok: true;
   service: "market-pulse-backend";
   status: "ready";
   database: "configured" | "not_configured";
+  telegram: "configured" | "not_configured";
   timestamp: string;
 };
 
-export async function createApp(config: AppConfig): Promise<FastifyInstance> {
+type AppDependencies = { telegramBotApi?: TelegramBotApi };
+
+export async function createApp(
+  config: AppConfig,
+  dependencies: AppDependencies = {}
+): Promise<FastifyInstance> {
   const database = createSupabaseAdminClient(config);
+  const telegramBotApi =
+    dependencies.telegramBotApi ??
+    createTelegramBotApi({ botToken: config.telegramBotToken, miniAppUrl: config.telegramMiniAppUrl });
   const app = Fastify({
     logger: config.nodeEnv !== "test",
     trustProxy: true
@@ -32,6 +43,10 @@ export async function createApp(config: AppConfig): Promise<FastifyInstance> {
     service: "market-pulse-backend",
     status: "ready",
     database: database ? "configured" : "not_configured",
+    telegram:
+      config.telegramBotToken && config.telegramWebhookSecret && config.backendPublicUrl
+        ? "configured"
+        : "not_configured",
     timestamp: new Date().toISOString()
   }));
 
@@ -64,6 +79,21 @@ export async function createApp(config: AppConfig): Promise<FastifyInstance> {
         }
       });
     }
+  });
+
+  app.post("/api/telegram/webhook", async (request, reply) => {
+    const header = request.headers["x-telegram-bot-api-secret-token"];
+    const receivedSecret = Array.isArray(header) ? "" : (header ?? "");
+
+    if (!verifyWebhookSecret(receivedSecret, config.telegramWebhookSecret)) {
+      return reply.code(401).send({ ok: false });
+    }
+
+    const command = parseWebhookCommand(request.body);
+    if (!command) return { ok: true };
+
+    await telegramBotApi.sendStartMessage(command.chatId);
+    return { ok: true };
   });
 
   return app;

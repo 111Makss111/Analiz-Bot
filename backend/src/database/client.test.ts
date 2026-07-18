@@ -8,6 +8,9 @@ const baseConfig: AppConfig = {
   port: 3000,
   frontendOrigin: "http://localhost:5173",
   telegramBotToken: "test-token",
+  telegramWebhookSecret: "",
+  telegramMiniAppUrl: "",
+  backendPublicUrl: "",
   telegramInitDataTtlSeconds: 86_400,
   supabaseUrl: "",
   supabaseSecretKey: ""
