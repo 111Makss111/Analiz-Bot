@@ -4,8 +4,17 @@ import type { AppConfig } from "./config.js";
 import { createSupabaseAdminClient } from "./database/client.js";
 import { AssetCatalogService, type AssetCatalog } from "./market-data/asset-catalog-service.js";
 import { SupabaseAssetCatalogRepository } from "./market-data/asset-catalog-repository.js";
+import {
+  SupabaseCandleStore,
+  UnavailableCandleStore,
+  type CandleStore
+} from "./market-data/candle-store.js";
 import { PocketPublicCatalogSource } from "./market-data/pocket-public-catalog.js";
-import type { AssetCatalogQuery } from "./market-data/types.js";
+import {
+  SUPPORTED_TIMEFRAMES,
+  type AssetCatalogQuery,
+  type TimeframeSeconds
+} from "./market-data/types.js";
 import { TelegramInitDataError, verifyTelegramInitData } from "./telegram/init-data.js";
 import { createTelegramBotApi, type TelegramBotApi } from "./telegram/bot-api.js";
 import { parseWebhookCommand, verifyWebhookSecret } from "./telegram/webhook.js";
@@ -22,12 +31,18 @@ export type HealthResponse = {
 type AppDependencies = {
   telegramBotApi?: TelegramBotApi;
   assetCatalog?: AssetCatalog;
+  candleStore?: CandleStore;
 };
 
 type AssetsQuerystring = {
   market?: string;
   search?: string;
 };
+
+type CandlesParams = { assetId: string };
+type CandlesQuerystring = { timeframe?: string; limit?: string };
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function createApp(
   config: AppConfig,
@@ -48,6 +63,9 @@ export async function createApp(
       source: new PocketPublicCatalogSource(),
       onRefreshError: (error) => app.log.warn({ err: error }, "Pocket asset catalog refresh failed")
     });
+  const candleStore =
+    dependencies.candleStore ??
+    (database ? new SupabaseCandleStore(database) : new UnavailableCandleStore());
 
   app.addHook("onReady", async () => assetCatalog.start());
   app.addHook("onClose", async () => assetCatalog.stop());
@@ -92,6 +110,41 @@ export async function createApp(
 
     return reply.header("Cache-Control", "public, max-age=10, stale-while-revalidate=30").send(response);
   });
+
+  app.get<{ Params: CandlesParams; Querystring: CandlesQuerystring }>(
+    "/api/assets/:assetId/candles",
+    async (request, reply) => {
+      if (!UUID_PATTERN.test(request.params.assetId)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: "INVALID_ASSET_ID", message: "assetId має бути UUID" }
+        });
+      }
+
+      const timeframe = Number(request.query.timeframe ?? "60");
+      if (!SUPPORTED_TIMEFRAMES.includes(timeframe as TimeframeSeconds)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: "INVALID_TIMEFRAME", message: "timeframe має бути 30, 60 або 300" }
+        });
+      }
+
+      const limit = Number(request.query.limit ?? "120");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: "INVALID_CANDLE_LIMIT", message: "limit має бути від 1 до 500" }
+        });
+      }
+
+      const response = await candleStore.list(
+        request.params.assetId,
+        timeframe as TimeframeSeconds,
+        limit
+      );
+      return reply.header("Cache-Control", "public, max-age=2, stale-while-revalidate=5").send(response);
+    }
+  );
 
   app.get("/api/auth/session", async (request, reply) => {
     const header = request.headers["x-telegram-init-data"];

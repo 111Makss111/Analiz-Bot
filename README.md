@@ -37,6 +37,7 @@ npm run dev:frontend
 - health: `http://localhost:3000/api/health`
 - wake: `http://localhost:3000/api/wake`
 - currency assets: `http://localhost:3000/api/assets?market=all`
+- M1 candles: `http://localhost:3000/api/assets/<asset-uuid>/candles?timeframe=60&limit=120`
 - Telegram session: `http://localhost:3000/api/auth/session` (потребує справжній `initData`)
 
 ## Перевірки
@@ -53,8 +54,9 @@ npm run build
 - Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
 - Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
 - Етап 5: кеш валютних пар, виплат і доступності Pocket через server-only API.
+- Етап 6: детерміноване ядро Pocket-тиків і 30s/M1/M5 свічок із пакетним записом у Supabase.
 - Telegram Bot: захищений webhook, `/start`, `/help` і кнопка запуску Mini App.
 
-Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md) та [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md).
+Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md), [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md) та [`docs/candle-data-stage-6.md`](docs/candle-data-stage-6.md).
 
 Живі котировки Pocket ще не підключені й не імітуються. Supabase потребує створеного project та застосування міграцій.
