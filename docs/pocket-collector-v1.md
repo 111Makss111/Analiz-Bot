@@ -56,7 +56,7 @@ DIAGNOSTICS_SECRET=long-random-server-only-secret
 supabase/migrations/20260718190000_pocket_collector_runtime.sql
 ```
 
-Міграція зберігає UUID існуючих активів, але переводить старі ключі на точні WebSocket symbols (`AUD/CAD OTC` → `AUDCAD_otc`). Історія та зовнішні ключі не втрачаються.
+Міграція зберігає UUID існуючих активів, але переводить старі ключі на точні WebSocket symbols (`AUD/CAD OTC` → `AUDCAD_otc`). Якщо обидві форми вже існують, вона об’єднує записи, переносить тики, свічки, прогнози й діагностику на canonical UUID та усуває лише дубль. Історія та зовнішні ключі не втрачаються.
 
 ## Перевірка після деплою
 
