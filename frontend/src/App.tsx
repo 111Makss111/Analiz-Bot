@@ -1,5 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { checkHealth, verifySession, type HealthResponse } from "./api";
+import {
+  checkHealth,
+  fetchAssets,
+  verifySession,
+  type AssetSummary,
+  type AssetsResponse,
+  type HealthResponse
+} from "./api";
 import { browserLaunchContext, type TelegramLaunchContext } from "./telegram";
 
 type ConnectionState = "checking" | "online" | "offline";
@@ -7,6 +14,7 @@ type Expiration = 1 | 2 | 3;
 type SessionState = "browser" | "checking" | "verified" | "rejected";
 type Tab = "analysis" | "history" | "statistics" | "control";
 type MarketFilter = "all" | "regular" | "otc";
+type CatalogLoadState = "loading" | "ready" | "error";
 type IconName = "pulse" | "history" | "chart" | "control" | "chevron" | "search" | "asset" | "shield";
 
 const tabs: { id: Tab; label: string; icon: IconName }[] = [
@@ -45,6 +53,33 @@ function EmptyState({ icon, title, text }: { icon: IconName; title: string; text
   );
 }
 
+function formatPayout(value: number | null): string {
+  return value === null ? "—" : `${Math.round(value)}%`;
+}
+
+function formatQuote(value: number | null): string {
+  if (value === null) return "—";
+  return new Intl.NumberFormat("uk-UA", { maximumFractionDigits: 6 }).format(value);
+}
+
+function formatDataAge(value: string | null): string {
+  if (!value) return "ще не оновлено";
+  const ageMs = Math.max(0, Date.now() - Date.parse(value));
+  if (!Number.isFinite(ageMs)) return "час невідомий";
+  if (ageMs < 60_000) return "щойно";
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)} хв тому`;
+  return `${Math.floor(ageMs / 3_600_000)} год тому`;
+}
+
+function assetDataLabel(asset: AssetSummary | null): string {
+  if (!asset) return "Очікують";
+  if (asset.dataState === "ready") return "Готові";
+  if (asset.dataState === "stale") return "Застарілі";
+  if (asset.dataState === "error") return "Помилка";
+  if (asset.dataState === "unavailable") return "Недоступні";
+  return "Без котировки";
+}
+
 export function App({ launchContext = browserLaunchContext }: { launchContext?: TelegramLaunchContext }) {
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -52,6 +87,11 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
   const [activeTab, setActiveTab] = useState<Tab>("analysis");
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
+  const [catalog, setCatalog] = useState<AssetsResponse | null>(null);
+  const [catalogState, setCatalogState] = useState<CatalogLoadState>("loading");
+  const [catalogReloadToken, setCatalogReloadToken] = useState(0);
+  const [assetSearch, setAssetSearch] = useState("");
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [haptics, setHaptics] = useState(true);
   const [compactNumbers, setCompactNumbers] = useState(false);
@@ -74,6 +114,21 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    setCatalogState("loading");
+    fetchAssets(controller.signal)
+      .then((response) => {
+        setCatalog(response);
+        setCatalogState("ready");
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setCatalogState("error");
+      });
+    return () => controller.abort();
+  }, [catalogReloadToken]);
+
+  useEffect(() => {
     if (launchContext.environment !== "telegram" || !launchContext.initData) return;
     const controller = new AbortController();
     verifySession(launchContext.initData, controller.signal)
@@ -92,6 +147,21 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
   }, [toast]);
 
   const showFutureNotice = (message: string) => setToast(message);
+  const selectedAsset = catalog?.assets.find((asset) => asset.id === selectedAssetId) ?? null;
+  const normalizedSearch = assetSearch.trim().toLocaleUpperCase("uk-UA");
+  const visibleAssets = (catalog?.assets ?? []).filter((asset) => {
+    if (marketFilter !== "all" && asset.marketType !== marketFilter) return false;
+    if (!normalizedSearch) return true;
+    return `${asset.displayName} ${asset.baseCurrency ?? ""} ${asset.quoteCurrency ?? ""}`
+      .toLocaleUpperCase("uk-UA")
+      .includes(normalizedSearch);
+  });
+
+  const chooseAsset = (asset: AssetSummary) => {
+    setSelectedAssetId(asset.id);
+    setCatalogOpen(false);
+    setToast(`${asset.displayName} обрано`);
+  };
 
   return (
     <div className="app-shell">
@@ -128,14 +198,18 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
 
             <button className="asset-selector" onClick={() => setCatalogOpen(true)} type="button">
               <span className="asset-symbol"><Icon name="asset" size={24} /></span>
-              <span className="asset-copy"><small>АКТИВ</small><strong>Оберіть інструмент</strong><em>Regular або OTC</em></span>
-              <span className="selector-action">Каталог <Icon name="chevron" size={17} /></span>
+              <span className="asset-copy">
+                <small>{selectedAsset ? `${selectedAsset.marketType === "otc" ? "OTC" : "REGULAR"} · ВАЛЮТНА ПАРА` : "АКТИВ"}</small>
+                <strong>{selectedAsset?.displayName ?? "Оберіть інструмент"}</strong>
+                <em>{selectedAsset ? (selectedAsset.isAvailable ? "Доступна зараз" : "Зараз недоступна") : "Regular або OTC"}</em>
+              </span>
+              <span className="selector-action">{selectedAsset ? "Змінити" : "Каталог"} <Icon name="chevron" size={17} /></span>
             </button>
 
             <div className="market-strip">
-              <div><span>Виплата</span><strong>—</strong></div>
-              <div><span>Котировка</span><strong>—</strong></div>
-              <div><span>Дані Pocket</span><strong className="waiting-value">Очікують</strong></div>
+              <div><span>Виплата</span><strong className={selectedAsset?.payoutPercent !== null && (selectedAsset?.payoutPercent ?? 100) < 70 ? "payout-warning" : ""}>{formatPayout(selectedAsset?.payoutPercent ?? null)}</strong></div>
+              <div><span>Котировка</span><strong>{formatQuote(selectedAsset?.lastQuote ?? null)}</strong></div>
+              <div><span>Дані Pocket</span><strong className={selectedAsset?.dataState === "ready" ? "ready-value" : "waiting-value"}>{assetDataLabel(selectedAsset)}</strong></div>
             </div>
 
             <fieldset className="expiry-block">
@@ -154,7 +228,14 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
             </fieldset>
 
             <div className="analysis-action">
-              <button className="analyze-button" onClick={() => { setToast("Спочатку оберіть актив"); setCatalogOpen(true); }} type="button">
+              <button className="analyze-button" onClick={() => {
+                if (!selectedAsset) {
+                  setToast("Спочатку оберіть актив");
+                  setCatalogOpen(true);
+                  return;
+                }
+                setToast(`Для ${selectedAsset.displayName} очікуємо живі котировки Pocket`);
+              }} type="button">
                 <Icon name="pulse" size={20} /> Проаналізувати
               </button>
               <p><Icon name="shield" size={14} /> Деморежим · без автоматичних угод</p>
@@ -210,12 +291,33 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
           <section aria-label="Каталог активів" aria-modal="true" className="catalog-sheet" onClick={(event) => event.stopPropagation()} role="dialog">
             <div className="sheet-handle" />
             <div className="sheet-header"><div><span className="kicker">POCKET OPTION</span><h2>Каталог активів</h2></div><button aria-label="Закрити каталог" className="close-button" onClick={() => setCatalogOpen(false)} type="button">×</button></div>
-            <label className="search-field"><Icon name="search" size={18} /><input aria-label="Пошук активу" placeholder="Пошук за назвою" type="search" /></label>
+            <label className="search-field"><Icon name="search" size={18} /><input aria-label="Пошук активу" onChange={(event) => setAssetSearch(event.target.value)} placeholder="Наприклад, EUR/USD" type="search" value={assetSearch} /></label>
             <div className="chip-row catalog-filters">
               {(["all", "regular", "otc"] as const).map((filter) => <button className={marketFilter === filter ? "chip active" : "chip"} key={filter} onClick={() => setMarketFilter(filter)} type="button">{filter === "all" ? "Усі" : filter === "regular" ? "Regular" : "OTC"}</button>)}
             </div>
-            <EmptyState icon="asset" title="Каталог готується" text="Тут з’являться тільки живі активи та виплати Pocket." />
-            <button className="sheet-action" onClick={() => setCatalogOpen(false)} type="button">Зрозуміло</button>
+            {catalogState === "ready" && <div className={catalog?.status === "stale" ? "catalog-meta stale" : "catalog-meta"}>
+              <span>{visibleAssets.length} пар</span>
+              <span>{catalog?.status === "stale" ? "Кеш застарів · " : "Оновлено "}{formatDataAge(catalog?.updatedAt ?? null)}</span>
+            </div>}
+            {catalogState === "loading" && <EmptyState icon="asset" title="Оновлюємо каталог" text="Завантажуємо збережені пари й виплати Pocket." />}
+            {catalogState === "error" && <>
+              <EmptyState icon="asset" title="Каталог тимчасово недоступний" text="Перевірте Render API та повторіть запит." />
+              <button className="sheet-action" onClick={() => setCatalogReloadToken((value) => value + 1)} type="button">Спробувати ще раз</button>
+            </>}
+            {catalogState === "ready" && visibleAssets.length === 0 && <EmptyState
+              icon="asset"
+              title={catalog?.status === "unavailable" ? "Supabase недоступний" : "Пари не знайдено"}
+              text={catalog?.status === "warming" ? "Перший каталог ще завантажується на сервері." : "Змініть пошук або фільтр ринку."}
+            />}
+            {catalogState === "ready" && visibleAssets.length > 0 && <div className="asset-list">
+              {visibleAssets.map((asset) => (
+                <button className={selectedAssetId === asset.id ? "asset-row selected" : "asset-row"} key={asset.id} onClick={() => chooseAsset(asset)} type="button">
+                  <span className="pair-code"><strong>{asset.baseCurrency ?? "—"}</strong><i />{asset.quoteCurrency ?? "—"}</span>
+                  <span className="asset-row-copy"><strong>{asset.displayName}</strong><small><i className={asset.isAvailable ? "availability-dot online" : "availability-dot"} />{asset.marketType === "otc" ? "OTC" : "Regular"} · {asset.isAvailable ? "Доступна" : "Закрита"}</small></span>
+                  <span className={(asset.payoutPercent ?? 0) < 70 ? "asset-payout low" : "asset-payout"}><strong>{formatPayout(asset.payoutPercent)}</strong><small>виплата</small></span>
+                </button>
+              ))}
+            </div>}
           </section>
         </div>
       )}
