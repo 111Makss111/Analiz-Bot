@@ -27,17 +27,18 @@ export function parsePocketCurrencyCatalog(html: string): CurrencyCatalogAsset[]
     if (!Number.isFinite(payoutPercent) || payoutPercent < 0 || payoutPercent > 100) continue;
 
     const marketType = otcMarker ? "otc" : "regular";
-    const pocketSymbol = `${baseCurrency}/${quoteCurrency}${marketType === "otc" ? " OTC" : ""}`;
+    const displayName = `${baseCurrency}/${quoteCurrency}${marketType === "otc" ? " OTC" : ""}`;
+    const pocketSymbol = `${baseCurrency}${quoteCurrency}${marketType === "otc" ? "_otc" : ""}`;
 
     assets.set(pocketSymbol, {
       pocketSymbol,
-      displayName: pocketSymbol,
+      displayName,
       baseCurrency,
       quoteCurrency,
       marketType,
       payoutPercent,
       sourcePayload: {
-        officialDisplayName: pocketSymbol,
+        officialDisplayName: displayName,
         source: "pocket-official-assets-page"
       }
     });

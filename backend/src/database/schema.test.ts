@@ -161,4 +161,97 @@ describe("initial Supabase migration", () => {
     expect(migration).toContain("tick_count");
     expect(migration).toContain("Number of accepted Pocket ticks");
   });
+
+  it("зберігає live Pocket symbol, payout і доступність атомарно", async () => {
+    const database = new PGlite({ extensions: { pgcrypto } });
+    try {
+      await database.exec(`
+        create schema if not exists extensions;
+        create role anon nologin;
+        create role authenticated nologin;
+        create role service_role nologin;
+      `);
+      for (const sql of migrations) await database.exec(sql);
+      await database.exec(`
+        select public.apply_pocket_live_asset_catalog(
+          '[{
+            "pocket_symbol":"AUDCAD_otc",
+            "display_name":"AUD/CAD OTC",
+            "base_currency":"AUD",
+            "quote_currency":"CAD",
+            "market_type":"otc",
+            "payout_percent":92,
+            "is_available":true
+          }]'::jsonb,
+          '2026-07-18T17:00:00Z'::timestamptz
+        );
+      `);
+      const result = await database.query<{
+        pocket_symbol: string;
+        display_name: string;
+        payout_percent: string;
+        is_available: boolean;
+      }>(`
+        select pocket_symbol, display_name, payout_percent, is_available
+        from public.assets where pocket_symbol = 'AUDCAD_otc'
+      `);
+
+      expect(result.rows[0]).toMatchObject({
+        pocket_symbol: "AUDCAD_otc",
+        display_name: "AUD/CAD OTC",
+        is_available: true
+      });
+      expect(Number(result.rows[0]?.payout_percent)).toBe(92);
+    } finally {
+      await database.close();
+    }
+  }, 30_000);
+
+  it("мігрує старий display-key у WebSocket symbol без зміни asset UUID", async () => {
+    const database = new PGlite({ extensions: { pgcrypto } });
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+    try {
+      await database.exec(`
+        create schema if not exists extensions;
+        create role anon nologin;
+        create role authenticated nologin;
+        create role service_role nologin;
+      `);
+      for (const sql of migrations.slice(0, -1)) await database.exec(sql);
+      await database.exec(`
+        insert into public.assets (
+          id, pocket_symbol, display_name, market_type, base_currency, quote_currency
+        ) values (
+          '${assetId}', 'AUD/CAD OTC', 'AUD/CAD OTC', 'otc', 'AUD', 'CAD'
+        );
+      `);
+      await database.exec(migrations.at(-1)!);
+      await database.exec(`
+        select public.replace_currency_asset_catalog(
+          '[{
+            "pocket_symbol":"AUD/CAD OTC",
+            "display_name":"AUD/CAD OTC",
+            "base_currency":"AUD",
+            "quote_currency":"CAD",
+            "market_type":"otc",
+            "payout_percent":90,
+            "catalog_payload":{}
+          }]'::jsonb,
+          'pocket-official-assets-page',
+          '2026-07-18T17:10:00Z'::timestamptz
+        );
+      `);
+      const result = await database.query<{ id: string; pocket_symbol: string }>(`
+        select id, pocket_symbol from public.assets where id = '${assetId}'
+      `);
+      const count = await database.query<{ count: bigint }>(`
+        select count(*) from public.assets where display_name = 'AUD/CAD OTC'
+      `);
+
+      expect(result.rows[0]).toEqual({ id: assetId, pocket_symbol: "AUDCAD_otc" });
+      expect(Number(count.rows[0]?.count)).toBe(1);
+    } finally {
+      await database.close();
+    }
+  }, 30_000);
 });

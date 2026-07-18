@@ -36,6 +36,8 @@ describe("loadConfig", () => {
     expect(config.frontendOrigin).toBe("https://market-pulse.vercel.app");
     expect(config.telegramInitDataTtlSeconds).toBe(86_400);
     expect(config.backendPublicUrl).toBe("https://market-pulse-backend.onrender.com");
+    expect(config.pocketDemoEndpoint).toBe("wss://demo-api-eu.po.market");
+    expect(config.pocketCollectorEnabled).toBe(true);
   });
 
   it("не дозволяє часткову Supabase-конфігурацію", () => {
@@ -55,5 +57,14 @@ describe("loadConfig", () => {
 
     expect(config.telegramWebhookSecret).toMatch(/^[a-f0-9]{64}$/);
     expect(config.telegramWebhookSecret).not.toContain(config.telegramBotToken);
+  });
+
+  it("не приймає довільний Pocket endpoint або не-boolean collector flag", () => {
+    expect(() => loadConfig({ ...productionEnv, POCKET_DEMO_REGION: "custom" })).toThrow(
+      "POCKET_DEMO_REGION"
+    );
+    expect(() => loadConfig({ ...productionEnv, POCKET_COLLECTOR_ENABLED: "yes" })).toThrow(
+      "true або false"
+    );
   });
 });

@@ -13,6 +13,7 @@ export type HealthResponse = {
   status: "ready";
   database: "configured" | "not_configured";
   telegram: "configured" | "not_configured";
+  pocket: "ready" | "warming" | "not_configured" | "error";
   timestamp: string;
 };
 
@@ -54,6 +55,18 @@ export async function fetchAssets(signal: AbortSignal): Promise<AssetsResponse> 
   const response = await fetch(`${apiBaseUrl}/api/assets?market=all`, { signal });
   if (!response.ok) throw new Error("Asset catalog unavailable");
   return (await response.json()) as AssetsResponse;
+}
+
+export async function prepareAsset(assetId: string, initData: string): Promise<void> {
+  const response = await fetch(`${apiBaseUrl}/api/assets/prepare`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Init-Data": initData
+    },
+    body: JSON.stringify({ assetId })
+  });
+  if (!response.ok) throw new Error("Pocket asset preparation failed");
 }
 
 export async function verifySession(initData: string, signal: AbortSignal): Promise<SessionResponse> {

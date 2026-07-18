@@ -9,7 +9,16 @@ import {
   UnavailableCandleStore,
   type CandleStore
 } from "./market-data/candle-store.js";
+import {
+  PocketCollector,
+  UnavailablePocketCollector,
+  type PocketCollectorRuntime
+} from "./market-data/pocket-collector.js";
+import { SupabasePocketAssetStore } from "./market-data/pocket-asset-store.js";
+import { MarketDataPipeline } from "./market-data/market-data-pipeline.js";
+import { SupabaseMarketDataWriter } from "./market-data/market-data-writer.js";
 import { PocketPublicCatalogSource } from "./market-data/pocket-public-catalog.js";
+import { SocketIoPocketTransport } from "./market-data/pocket-transport.js";
 import {
   SUPPORTED_TIMEFRAMES,
   type AssetCatalogQuery,
@@ -25,6 +34,7 @@ export type HealthResponse = {
   status: "ready";
   database: "configured" | "not_configured";
   telegram: "configured" | "not_configured";
+  pocket: "ready" | "warming" | "not_configured" | "error";
   timestamp: string;
 };
 
@@ -32,6 +42,7 @@ type AppDependencies = {
   telegramBotApi?: TelegramBotApi;
   assetCatalog?: AssetCatalog;
   candleStore?: CandleStore;
+  pocketCollector?: PocketCollectorRuntime;
 };
 
 type AssetsQuerystring = {
@@ -41,6 +52,7 @@ type AssetsQuerystring = {
 
 type CandlesParams = { assetId: string };
 type CandlesQuerystring = { timeframe?: string; limit?: string };
+type PrepareAssetBody = { assetId?: string };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -66,9 +78,35 @@ export async function createApp(
   const candleStore =
     dependencies.candleStore ??
     (database ? new SupabaseCandleStore(database) : new UnavailableCandleStore());
+  const marketDataPipeline = new MarketDataPipeline(
+    database ? new SupabaseMarketDataWriter(database) : null,
+    (error) => app.log.error({ err: error }, "Pocket market-data persistence failed")
+  );
+  const pocketCollector =
+    dependencies.pocketCollector ??
+    (database
+      ? new PocketCollector({
+          enabled: config.pocketCollectorEnabled,
+          authPacket: config.pocketAuthPacket,
+          maxAssets: config.pocketMaxAssets,
+          staleAfterMs: config.pocketStaleAfterMs,
+          assetStore: new SupabasePocketAssetStore(database),
+          candleStore,
+          pipeline: marketDataPipeline,
+          transportFactory: (handlers) =>
+            new SocketIoPocketTransport(config.pocketDemoEndpoint, handlers),
+          onError: (error, message) => app.log.warn({ err: error }, message)
+        })
+      : new UnavailablePocketCollector());
 
-  app.addHook("onReady", async () => assetCatalog.start());
-  app.addHook("onClose", async () => assetCatalog.stop());
+  app.addHook("onReady", async () => {
+    assetCatalog.start();
+    await pocketCollector.start();
+  });
+  app.addHook("onClose", async () => {
+    await pocketCollector.stop();
+    assetCatalog.stop();
+  });
 
   await app.register(cors, {
     origin: config.frontendOrigin,
@@ -81,17 +119,42 @@ export async function createApp(
     return { ok: true as const };
   });
 
-  app.get<{ Reply: HealthResponse }>("/api/health", async () => ({
-    ok: true,
-    service: "market-pulse-backend",
-    status: "ready",
-    database: database ? "configured" : "not_configured",
-    telegram:
-      config.telegramBotToken && config.telegramWebhookSecret && config.backendPublicUrl
-        ? "configured"
-        : "not_configured",
-    timestamp: new Date().toISOString()
-  }));
+  app.get<{ Reply: HealthResponse }>("/api/health", async () => {
+    const pocketState = pocketCollector.status().state;
+    return {
+      ok: true,
+      service: "market-pulse-backend",
+      status: "ready",
+      database: database ? "configured" : "not_configured",
+      telegram:
+        config.telegramBotToken && config.telegramWebhookSecret && config.backendPublicUrl
+          ? "configured"
+          : "not_configured",
+      pocket:
+        pocketState === "ready"
+          ? "ready"
+          : pocketState === "not_configured" || pocketState === "disabled"
+            ? "not_configured"
+            : pocketState === "auth_rejected"
+              ? "error"
+              : "warming",
+      timestamp: new Date().toISOString()
+    };
+  });
+
+  app.get("/api/diagnostics", async (request, reply) => {
+    const header = request.headers["x-diagnostics-secret"];
+    const receivedSecret = Array.isArray(header) ? "" : (header ?? "");
+    if (!config.diagnosticsSecret || !verifyWebhookSecret(receivedSecret, config.diagnosticsSecret)) {
+      return reply.code(401).send({ ok: false });
+    }
+    return reply.header("Cache-Control", "no-store").send({
+      ok: true,
+      timestamp: new Date().toISOString(),
+      database: database ? "configured" : "not_configured",
+      pocket: pocketCollector.status()
+    });
+  });
 
   app.get<{ Querystring: AssetsQuerystring }>("/api/assets", async (request, reply) => {
     const rawMarket = request.query.market ?? "all";
@@ -145,6 +208,36 @@ export async function createApp(
       return reply.header("Cache-Control", "public, max-age=2, stale-while-revalidate=5").send(response);
     }
   );
+
+  app.post<{ Body: PrepareAssetBody }>("/api/assets/prepare", async (request, reply) => {
+    const header = request.headers["x-telegram-init-data"];
+    const rawInitData = Array.isArray(header) ? "" : (header ?? "");
+    try {
+      verifyTelegramInitData(rawInitData, {
+        botToken: config.telegramBotToken,
+        maxAgeSeconds: config.telegramInitDataTtlSeconds
+      });
+    } catch (error) {
+      if (!(error instanceof TelegramInitDataError)) throw error;
+      return reply.code(401).header("Cache-Control", "no-store").send({
+        ok: false,
+        error: { code: error.code, message: error.message }
+      });
+    }
+
+    const assetId = request.body?.assetId ?? "";
+    if (!UUID_PATTERN.test(assetId)) {
+      return reply.code(400).send({
+        ok: false,
+        error: { code: "INVALID_ASSET_ID", message: "assetId має бути UUID" }
+      });
+    }
+    const result = await pocketCollector.prepareAsset(assetId);
+    return reply
+      .code(result.ok ? 200 : result.code === "POCKET_ASSET_NOT_FOUND" ? 404 : 503)
+      .header("Cache-Control", "no-store")
+      .send(result);
+  });
 
   app.get("/api/auth/session", async (request, reply) => {
     const header = request.headers["x-telegram-init-data"];

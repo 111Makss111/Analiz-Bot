@@ -12,7 +12,18 @@ export type AppConfig = {
   telegramInitDataTtlSeconds: number;
   supabaseUrl: string;
   supabaseSecretKey: string;
+  diagnosticsSecret: string;
+  pocketCollectorEnabled: boolean;
+  pocketAuthPacket: string;
+  pocketDemoEndpoint: string;
+  pocketMaxAssets: number;
+  pocketStaleAfterMs: number;
 };
+
+const POCKET_DEMO_ENDPOINTS = {
+  EU: "wss://demo-api-eu.po.market",
+  EU_ALT: "wss://try-demo-eu.po.market"
+} as const;
 
 function readPort(value: string | undefined): number {
   const port = Number(value ?? "3000");
@@ -32,6 +43,20 @@ function readPositiveInteger(value: string | undefined, fallback: number, name: 
   }
 
   return parsed;
+}
+
+function readBoolean(value: string | undefined, fallback: boolean, name: string): boolean {
+  if (value === undefined || value === "") return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} має бути true або false`);
+}
+
+function readPocketEndpoint(region: string | undefined): string {
+  const selected = (region ?? "EU") as keyof typeof POCKET_DEMO_ENDPOINTS;
+  const endpoint = POCKET_DEMO_ENDPOINTS[selected];
+  if (!endpoint) throw new Error("POCKET_DEMO_REGION має бути EU або EU_ALT");
+  return endpoint;
 }
 
 function readFrontendOrigin(value: string | undefined, nodeEnv: AppConfig["nodeEnv"]): string {
@@ -137,6 +162,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     (validatedNodeEnv === "production" && telegramBotToken
       ? createHash("sha256").update(`market-pulse-webhook:${telegramBotToken}`).digest("hex")
       : "");
+  const diagnosticsSecret = env.DIAGNOSTICS_SECRET?.trim() || telegramWebhookSecret;
+
+  if (
+    validatedNodeEnv === "production" &&
+    diagnosticsSecret.length > 0 &&
+    diagnosticsSecret.length < 32
+  ) {
+    throw new Error("DIAGNOSTICS_SECRET повинен містити щонайменше 32 символи у production");
+  }
 
   const frontendOrigin = readFrontendOrigin(env.FRONTEND_ORIGIN, validatedNodeEnv);
   const backendPublicUrl = readHttpsOrigin(
@@ -162,6 +196,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       env.TELEGRAM_INIT_DATA_TTL_SECONDS,
       86_400,
       "TELEGRAM_INIT_DATA_TTL_SECONDS"
+    ),
+    diagnosticsSecret,
+    pocketCollectorEnabled: readBoolean(
+      env.POCKET_COLLECTOR_ENABLED,
+      true,
+      "POCKET_COLLECTOR_ENABLED"
+    ),
+    pocketAuthPacket: env.POCKET_AUTH_PACKET?.trim() ?? "",
+    pocketDemoEndpoint: readPocketEndpoint(env.POCKET_DEMO_REGION),
+    pocketMaxAssets: readPositiveInteger(env.POCKET_MAX_ASSETS, 80, "POCKET_MAX_ASSETS"),
+    pocketStaleAfterMs: readPositiveInteger(
+      env.POCKET_STALE_AFTER_MS,
+      15_000,
+      "POCKET_STALE_AFTER_MS"
     ),
     ...supabase
   };

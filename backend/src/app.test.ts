@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import type { AssetCatalog } from "./market-data/asset-catalog-service.js";
 import type { CandleStore } from "./market-data/candle-store.js";
+import type { PocketCollectorRuntime } from "./market-data/pocket-collector.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -16,7 +17,13 @@ const config: AppConfig = {
   backendPublicUrl: "",
   telegramInitDataTtlSeconds: 86_400,
   supabaseUrl: "",
-  supabaseSecretKey: ""
+  supabaseSecretKey: "",
+  diagnosticsSecret: "test_diagnostics_secret_123456789012345",
+  pocketCollectorEnabled: true,
+  pocketAuthPacket: "",
+  pocketDemoEndpoint: "wss://demo-api-eu.po.market",
+  pocketMaxAssets: 80,
+  pocketStaleAfterMs: 15_000
 };
 
 const apps: Awaited<ReturnType<typeof createApp>>[] = [];
@@ -81,7 +88,7 @@ describe("system endpoints", () => {
         assets: [
           {
             id: "asset-1",
-            pocketSymbol: "EUR/USD OTC",
+            pocketSymbol: "EURUSD_otc",
             displayName: "EUR/USD OTC",
             baseCurrency: "EUR",
             quoteCurrency: "USD",
@@ -108,7 +115,7 @@ describe("system endpoints", () => {
     expect(response.json()).toMatchObject({
       ok: true,
       status: "ready",
-      assets: [{ pocketSymbol: "EUR/USD OTC", payoutPercent: 92 }]
+      assets: [{ pocketSymbol: "EURUSD_otc", payoutPercent: 92 }]
     });
     expect(assetCatalog.list).toHaveBeenCalledWith({ market: "otc", search: "EUR" });
   });
@@ -126,6 +133,7 @@ describe("system endpoints", () => {
     const candleStore: CandleStore = {
       upsert: vi.fn(async () => undefined),
       loadCurrent: vi.fn(async () => []),
+      loadCurrentForAssets: vi.fn(async () => []),
       list: vi.fn(async (assetId, timeframeSeconds) => ({
         ok: true,
         status: "ready",
@@ -179,6 +187,80 @@ describe("system endpoints", () => {
 
     expect(badAsset.statusCode).toBe(400);
     expect(badTimeframe.statusCode).toBe(400);
+  });
+
+  it("захищає детальну діагностику окремим server secret", async () => {
+    const app = await createApp(config);
+    apps.push(app);
+    const rejected = await app.inject({ method: "GET", url: "/api/diagnostics" });
+    const accepted = await app.inject({
+      method: "GET",
+      url: "/api/diagnostics",
+      headers: { "x-diagnostics-secret": config.diagnosticsSecret }
+    });
+
+    expect(rejected.statusCode).toBe(401);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ ok: true, pocket: { configured: false } });
+  });
+
+  it("готує вибраний актив лише після перевірки Telegram initData", async () => {
+    const prepareAsset = vi.fn(async (assetId: string) => ({
+      ok: true,
+      code: "POCKET_HISTORY_REQUESTED",
+      message: "prepared",
+      assetId,
+      collector: collector.status()
+    }));
+    const collector: PocketCollectorRuntime = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      prepareAsset,
+      status: () => ({
+        state: "ready",
+        configured: true,
+        enabled: true,
+        connected: true,
+        authenticated: true,
+        message: "ready",
+        activeAssets: 1,
+        priorityAssets: 0,
+        subscriptions: 1,
+        reconnectAttempt: 0,
+        reconnectScheduled: false,
+        lastConnectedAt: null,
+        lastAuthenticatedAt: null,
+        lastStreamAt: null,
+        lastTickAt: null,
+        lastCatalogAt: null,
+        lastHistoryAt: null,
+        quoteAgeMs: null,
+        pocketClockOffsetMs: null,
+        acceptedTicks: 0,
+        rejectedTicks: 0,
+        historyCandles: 0,
+        lastError: null
+      })
+    };
+    const app = await createApp(config, { pocketCollector: collector });
+    apps.push(app);
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/assets/prepare",
+      payload: { assetId }
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/assets/prepare",
+      headers: { "x-telegram-init-data": createSignedInitData() },
+      payload: { assetId }
+    });
+
+    expect(rejected.statusCode).toBe(401);
+    expect(accepted.statusCode).toBe(200);
+    expect(prepareAsset).toHaveBeenCalledWith(assetId);
   });
 
   it("не додає CORS-дозвіл для стороннього origin", async () => {
