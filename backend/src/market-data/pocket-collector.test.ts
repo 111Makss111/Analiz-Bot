@@ -171,6 +171,71 @@ describe("PocketCollector", () => {
     await harness.collector.stop();
   });
 
+  it("нормалізує стабільний Pocket UTC+2 shift, але зберігає сирий offset у діагностиці", async () => {
+    const harness = createHarness();
+    await harness.collector.start();
+    const transport = harness.transport()!;
+    transport.open();
+    transport.authenticate();
+    const now = Date.now();
+    const shifted = now + 2 * 60 * 60 * 1_000;
+
+    transport.handlers.onStream([
+      ["AUDCAD_otc", shifted, 0.91, "shift-1"],
+      ["AUDCAD_otc", shifted + 1, 0.92, "shift-2"],
+      ["AUDCAD_otc", shifted + 2, 0.93, "shift-3"]
+    ]);
+    await harness.pipeline.flushNow();
+
+    expect(harness.persist).toHaveBeenCalledWith(
+      [expect.objectContaining({ price: 0.93, pocketTimeMs: expect.any(Number) })],
+      expect.any(Array),
+      [expect.objectContaining({ price: 0.93 })]
+    );
+    expect(harness.collector.status()).toMatchObject({
+      state: "ready",
+      acceptedTicks: 1,
+      rejectedTicks: 2,
+      rawPocketClockOffsetMs: expect.closeTo(-7_200_000, -2),
+      pocketClockOffsetMs: expect.closeTo(0, -2),
+      pocketTimestampCorrectionMs: 7_200_000
+    });
+    await harness.collector.stop();
+  });
+
+  it("утримує history до калібрування часу і зберігає нормалізовану свічку", async () => {
+    const harness = createHarness();
+    await harness.collector.start();
+    const transport = harness.transport()!;
+    transport.open();
+    transport.authenticate();
+    const now = Date.now();
+    const shift = 2 * 60 * 60 * 1_000;
+
+    transport.handlers.onHistory({
+      asset: "AUDCAD_otc",
+      period: 60,
+      history: [[now - 120_000 + shift, 0.9, 0.95, 0.89, 0.94]]
+    });
+    transport.handlers.onStream([
+      ["AUDCAD_otc", now + shift, 0.94],
+      ["AUDCAD_otc", now + shift + 1, 0.941],
+      ["AUDCAD_otc", now + shift + 2, 0.942]
+    ]);
+
+    await vi.waitFor(() =>
+      expect(harness.collector.status().historyCandles).toBeGreaterThanOrEqual(1)
+    );
+    expect(harness.persist).toHaveBeenCalledWith(
+      [],
+      expect.arrayContaining([
+        expect.objectContaining({ timeframeSeconds: 60, isComplete: true })
+      ]),
+      []
+    );
+    await harness.collector.stop();
+  });
+
   it("обмежує reconnect backoff", () => {
     expect(reconnectDelayMs(1)).toBe(1_000);
     expect(reconnectDelayMs(3)).toBe(4_000);

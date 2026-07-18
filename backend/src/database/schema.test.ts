@@ -254,4 +254,86 @@ describe("initial Supabase migration", () => {
       await database.close();
     }
   }, 30_000);
+
+  it("об’єднує наявні display/WebSocket дублікати та переносить залежні дані", async () => {
+    const database = new PGlite({ extensions: { pgcrypto } });
+    const canonicalId = "123e4567-e89b-42d3-a456-426614174000";
+    const legacyId = "223e4567-e89b-42d3-a456-426614174000";
+    try {
+      await database.exec(`
+        create schema if not exists extensions;
+        create role anon nologin;
+        create role authenticated nologin;
+        create role service_role nologin;
+      `);
+      for (const sql of migrations.slice(0, -1)) await database.exec(sql);
+      await database.exec(`
+        insert into public.assets (
+          id, pocket_symbol, display_name, market_type, base_currency, quote_currency,
+          is_available, payout_percent
+        ) values
+          ('${canonicalId}', 'TNDUSD_otc', 'TND/USD OTC', 'otc', 'TND', 'USD', true, 91),
+          ('${legacyId}', 'TND/USD OTC', 'TND/USD OTC', 'otc', 'TND', 'USD', true, 92);
+
+        insert into public.ticks (asset_id, pocket_time, received_at, price)
+        values
+          ('${canonicalId}', '2026-07-18T17:00:10Z', '2026-07-18T17:00:10.050Z', 0.32),
+          ('${legacyId}', '2026-07-18T17:00:10Z', '2026-07-18T17:00:10.060Z', 0.32);
+
+        insert into public.candles (
+          asset_id, timeframe_seconds, open_time, close_time, last_tick_at,
+          open, high, low, close, tick_count, is_complete
+        ) values
+          (
+            '${canonicalId}', 60, '2026-07-18T17:00:00Z', '2026-07-18T17:01:00Z',
+            '2026-07-18T17:00:30Z', 0.31, 0.32, 0.30, 0.315, 2, true
+          ),
+          (
+            '${legacyId}', 60, '2026-07-18T17:00:00Z', '2026-07-18T17:01:00Z',
+            '2026-07-18T17:00:50Z', 0.31, 0.33, 0.29, 0.32, 3, true
+          );
+
+        insert into public.diagnostic_events (component, severity, code, message, asset_id)
+        values ('collector', 'warning', 'DUPLICATE_TEST', 'test', '${legacyId}');
+      `);
+
+      await database.exec(migrations.at(-1)!);
+
+      const assets = await database.query<{ id: string; pocket_symbol: string }>(`
+        select id, pocket_symbol from public.assets where display_name = 'TND/USD OTC'
+      `);
+      const ticks = await database.query<{ count: bigint; asset_id: string }>(`
+        select count(*) as count, min(asset_id::text) as asset_id
+        from public.ticks where price = 0.32
+      `);
+      const candles = await database.query<{
+        count: bigint;
+        asset_id: string;
+        high: string;
+        low: string;
+        close: string;
+      }>(`
+        select count(*) as count, min(asset_id::text) as asset_id,
+          max(high)::text as high, min(low)::text as low, max(close)::text as close
+        from public.candles where open_time = '2026-07-18T17:00:00Z'
+      `);
+      const diagnostic = await database.query<{ asset_id: string }>(`
+        select asset_id from public.diagnostic_events where code = 'DUPLICATE_TEST'
+      `);
+
+      expect(assets.rows).toEqual([{ id: canonicalId, pocket_symbol: "TNDUSD_otc" }]);
+      expect(Number(ticks.rows[0]?.count)).toBe(1);
+      expect(ticks.rows[0]?.asset_id).toBe(canonicalId);
+      expect(Number(candles.rows[0]?.count)).toBe(1);
+      expect(candles.rows[0]).toMatchObject({
+        asset_id: canonicalId,
+        high: "0.3300000000",
+        low: "0.2900000000",
+        close: "0.3200000000"
+      });
+      expect(diagnostic.rows[0]?.asset_id).toBe(canonicalId);
+    } finally {
+      await database.close();
+    }
+  }, 30_000);
 });
