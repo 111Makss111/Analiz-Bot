@@ -7,7 +7,7 @@
     "backend"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "24.x"
   },
   "scripts": {
     "dev:frontend": "npm run dev --workspace frontend",

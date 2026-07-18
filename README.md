@@ -14,7 +14,7 @@ Frontend і backend є окремими застосунками. Секрети
 
 ## Вимоги
 
-- Node.js 22+
+- Node.js 24 LTS
 - npm 10+
 
 ## Перший локальний запуск
@@ -51,6 +51,7 @@ npm run build
 - Етап 1: чиста структура, локальний запуск і базові endpoints.
 - Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
 - Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
+- Telegram Bot: захищений webhook, `/start`, `/help` і кнопка запуску Mini App.
 
 Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md) та [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md).
 
