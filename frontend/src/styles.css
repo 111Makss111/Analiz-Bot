@@ -58,7 +58,7 @@ h2 { font-size: 1.35rem; }
   letter-spacing: 0.1em;
 }
 
-.status-card, .analysis-card, .research-note {
+.status-card, .telegram-card, .analysis-card, .research-note {
   border: 1px solid rgba(170, 255, 206, 0.11);
   border-radius: 18px;
   background: rgba(13, 45, 36, 0.88);
@@ -72,6 +72,10 @@ h2 { font-size: 1.35rem; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #d1a958; }
 .status-dot--online { background: #7ef29b; box-shadow: 0 0 0 5px rgba(126, 242, 155, 0.1); }
 .status-dot--offline { background: #ff7d77; box-shadow: 0 0 0 5px rgba(255, 125, 119, 0.1); }
+
+.telegram-card { margin-bottom: 12px; padding: 13px 16px; color: #c9ddd4; }
+.telegram-card strong { font-size: 0.83rem; }
+.telegram-card--rejected { border-color: rgba(255, 125, 119, 0.22); }
 
 .analysis-card { padding: 20px; }
 .section-heading { justify-content: space-between; }
