@@ -11,6 +11,8 @@
 5. `updateHistoryNewFast`, `updateHistoryNew` і `loadHistoryPeriod` заповнюють пропущену історію без очікування нових 35 свічок.
 6. Вибраний користувачем актив через `POST /api/assets/prepare` отримує додатковий запит 30s та M1 history.
 
+Якщо числовий timestamp Pocket містить часовий пояс термінала, колектор калібрує лише стабільний зсув, кратний 15 хвилинам і в межах реальних UTC-зон. Потрібні три узгоджені live-тики. Після нормалізації повторно застосовується звичайна перевірка свіжості, тому довільні майбутні або застарілі дані не стають валідними. Та сама зафіксована корекція застосовується до Pocket history перед побудовою 30s/M1/M5 buckets.
+
 Повторна підписка на той самий символ і період дедуплікується. Socket.IO heartbeat обробляє ping timeout, а collector використовує обмежений backoff 1–30 секунд. Пакет, який Pocket не підтвердив за 20 секунд, позначається як відхилений і не запускається у нескінченному циклі.
 
 ## Безпека
@@ -74,4 +76,8 @@ Invoke-RestMethod `
   -Headers @{ "X-Diagnostics-Secret" = "YOUR_DIAGNOSTICS_SECRET" }
 ```
 
-Корисні поля: `authenticated`, `lastTickAt`, `quoteAgeMs`, `pocketClockOffsetMs`, `acceptedTicks`, `rejectedTicks` і `lastError`.
+Корисні поля: `authenticated`, `lastTickAt`, `quoteAgeMs`, `rawPocketClockOffsetMs`, `pocketClockOffsetMs`, `pocketTimestampCorrectionMs`, `acceptedTicks`, `rejectedTicks` і `lastError`.
+
+- `rawPocketClockOffsetMs` — різниця Render і необробленого timestamp Pocket.
+- `pocketTimestampCorrectionMs` — підтверджена корекція terminal wall clock до UTC.
+- `pocketClockOffsetMs` — залишкова різниця після корекції; саме вона використовується для контролю свіжості.

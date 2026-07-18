@@ -2,10 +2,12 @@ import type { CandleStore } from "./candle-store.js";
 import type { MarketDataPipeline } from "./market-data-pipeline.js";
 import type { CollectorAsset, PocketAssetStore } from "./pocket-asset-store.js";
 import { parsePocketDemoAuthPacket, type PocketDemoAuth } from "./pocket-auth.js";
+import { PocketClock } from "./pocket-clock.js";
 import {
   parsePocketAssets,
   parsePocketHistory,
   parsePocketStream,
+  type PocketHistory,
   type PocketProtocolCandle,
   type PocketProtocolTick
 } from "./pocket-protocol.js";
@@ -45,7 +47,9 @@ export type PocketCollectorStatus = {
   lastCatalogAt: string | null;
   lastHistoryAt: string | null;
   quoteAgeMs: number | null;
+  rawPocketClockOffsetMs: number | null;
   pocketClockOffsetMs: number | null;
+  pocketTimestampCorrectionMs: number | null;
   acceptedTicks: number;
   rejectedTicks: number;
   historyCandles: number;
@@ -80,9 +84,15 @@ type CollectorOptions = {
   onError?: (error: unknown, message: string) => void;
 };
 
+type PendingHistory = {
+  history: PocketHistory;
+  receivedAtMs: number;
+};
+
 const AUTH_TIMEOUT_MS = 20_000;
 const WATCHDOG_INTERVAL_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const MAX_PENDING_HISTORIES = 200;
 
 export function reconnectDelayMs(attempt: number): number {
   const exponent = Math.min(5, Math.max(0, Math.trunc(attempt) - 1));
@@ -211,14 +221,19 @@ export class PocketCollector implements PocketCollectorRuntime {
   private lastTickAt: number | null = null;
   private lastCatalogAt: number | null = null;
   private lastHistoryAt: number | null = null;
+  private rawPocketClockOffsetMs: number | null = null;
   private pocketClockOffsetMs: number | null = null;
   private acceptedTicks = 0;
   private rejectedTicks = 0;
   private historyCandles = 0;
   private lastError: string | null = null;
   private catalogWrite: Promise<void> = Promise.resolve();
+  private readonly clock: PocketClock;
+  private readonly pendingHistories: PendingHistory[] = [];
 
-  constructor(private readonly options: CollectorOptions) {}
+  constructor(private readonly options: CollectorOptions) {
+    this.clock = new PocketClock(options.staleAfterMs);
+  }
 
   async start(): Promise<void> {
     if (!this.stopped) return;
@@ -272,6 +287,8 @@ export class PocketCollector implements PocketCollectorRuntime {
     this.transport = null;
     this.connected = false;
     this.authenticated = false;
+    this.pendingHistories.length = 0;
+    this.clock.reset();
     await this.catalogWrite.catch(() => undefined);
     await this.options.pipeline.stop();
     this.state = "stopped";
@@ -301,7 +318,9 @@ export class PocketCollector implements PocketCollectorRuntime {
       lastCatalogAt: iso(this.lastCatalogAt),
       lastHistoryAt: iso(this.lastHistoryAt),
       quoteAgeMs,
+      rawPocketClockOffsetMs: this.rawPocketClockOffsetMs,
       pocketClockOffsetMs: this.pocketClockOffsetMs,
+      pocketTimestampCorrectionMs: this.clock.correctionMs(),
       acceptedTicks: this.acceptedTicks,
       rejectedTicks: this.rejectedTicks,
       historyCandles: this.historyCandles,
@@ -366,6 +385,10 @@ export class PocketCollector implements PocketCollectorRuntime {
     this.connected = true;
     this.authenticated = false;
     this.requestedSubscriptions.clear();
+    this.pendingHistories.length = 0;
+    this.clock.reset();
+    this.rawPocketClockOffsetMs = null;
+    this.pocketClockOffsetMs = null;
     this.lastConnectedAt = Date.now();
     this.state = "authenticating";
     this.message = "WebSocket підключено; перевіряємо Demo-сесію";
@@ -443,16 +466,17 @@ export class PocketCollector implements PocketCollectorRuntime {
         this.rejectedTicks += 1;
         continue;
       }
-      const offsetMs = receivedAtMs - parsed.pocketTimeMs;
-      this.pocketClockOffsetMs = offsetMs;
-      if (offsetMs < -2_000 || offsetMs > this.options.staleAfterMs) {
+      const clock = this.clock.normalize(parsed.pocketTimeMs, receivedAtMs);
+      this.rawPocketClockOffsetMs = clock.rawOffsetMs;
+      this.pocketClockOffsetMs = clock.normalizedOffsetMs;
+      if (!clock.accepted || clock.normalizedTimestampMs === null) {
         this.rejectedTicks += 1;
         continue;
       }
       const tick: PocketTick = {
         assetId: asset.id,
         price: parsed.price,
-        pocketTimeMs: parsed.pocketTimeMs,
+        pocketTimeMs: clock.normalizedTimestampMs,
         receivedAtMs,
         sequence: parsed.sequence
       };
@@ -463,6 +487,7 @@ export class PocketCollector implements PocketCollectorRuntime {
       } else {
         this.rejectedTicks += 1;
       }
+      if (clock.justCalibrated) void this.flushPendingHistories();
     }
   }
 
@@ -486,14 +511,33 @@ export class PocketCollector implements PocketCollectorRuntime {
   private async handleHistory(payload: unknown): Promise<void> {
     const history = parsePocketHistory(payload);
     if (!history) return;
-    const asset = this.assetsBySymbol.get(history.pocketSymbol);
-    if (!asset) return;
     const receivedAtMs = Date.now();
     this.lastHistoryAt = receivedAtMs;
+    if (!this.clock.isCalibrated()) {
+      if (this.pendingHistories.length >= MAX_PENDING_HISTORIES) this.pendingHistories.shift();
+      this.pendingHistories.push({ history, receivedAtMs });
+      return;
+    }
+    await this.persistHistory(history, receivedAtMs);
+  }
+
+  private async persistHistory(history: PocketHistory, receivedAtMs: number): Promise<void> {
+    const asset = this.assetsBySymbol.get(history.pocketSymbol);
+    if (!asset) return;
+    const correctionMs = this.clock.correctionMs();
+    if (correctionMs === null) return;
+    const ticks = history.ticks.map((tick) => ({
+      ...tick,
+      pocketTimeMs: tick.pocketTimeMs - correctionMs
+    }));
+    const sourceCandles = history.candles.map((candle) => ({
+      ...candle,
+      openTimeMs: candle.openTimeMs - correctionMs
+    }));
     const candles = new Map<string, MarketCandle>();
     for (const candle of [
-      ...buildHistoricalCandles(asset.id, history.ticks, receivedAtMs),
-      ...convertPocketCandles(asset.id, history.candles, receivedAtMs)
+      ...buildHistoricalCandles(asset.id, ticks, receivedAtMs),
+      ...convertPocketCandles(asset.id, sourceCandles, receivedAtMs)
     ]) {
       candles.set(candleKey(candle), candle);
     }
@@ -506,6 +550,12 @@ export class PocketCollector implements PocketCollectorRuntime {
       this.lastError = safeMessage(error);
       this.options.onError?.(error, "Pocket history persistence failed");
     }
+  }
+
+  private async flushPendingHistories(): Promise<void> {
+    if (!this.clock.isCalibrated() || this.pendingHistories.length === 0) return;
+    const pending = this.pendingHistories.splice(0);
+    for (const item of pending) await this.persistHistory(item.history, item.receivedAtMs);
   }
 
   private handleBinary(payload: unknown): void {
@@ -607,7 +657,9 @@ export class UnavailablePocketCollector implements PocketCollectorRuntime {
       lastCatalogAt: null,
       lastHistoryAt: null,
       quoteAgeMs: null,
+      rawPocketClockOffsetMs: null,
       pocketClockOffsetMs: null,
+      pocketTimestampCorrectionMs: null,
       acceptedTicks: 0,
       rejectedTicks: 0,
       historyCandles: 0,
