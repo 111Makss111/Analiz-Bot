@@ -1,11 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  analyzeAsset,
+  ApiError,
   checkHealth,
   fetchAssets,
   prepareAsset,
   verifySession,
   type AssetSummary,
   type AssetsResponse,
+  type AnalysisResult,
   type HealthResponse
 } from "./api";
 import { browserLaunchContext, type TelegramLaunchContext } from "./telegram";
@@ -81,6 +84,13 @@ function assetDataLabel(asset: AssetSummary | null): string {
   return "Без котировки";
 }
 
+function strengthLabel(strength: AnalysisResult["strength"]): string {
+  if (strength === "stronger") return "Сильніший";
+  if (strength === "normal") return "Звичайний";
+  if (strength === "risky") return "Ризиковий";
+  return "Дуже ризиковий";
+}
+
 export function App({ launchContext = browserLaunchContext }: { launchContext?: TelegramLaunchContext }) {
   const [connection, setConnection] = useState<ConnectionState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -93,6 +103,9 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
   const [catalogReloadToken, setCatalogReloadToken] = useState(0);
   const [assetSearch, setAssetSearch] = useState("");
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [haptics, setHaptics] = useState(true);
   const [compactNumbers, setCompactNumbers] = useState(false);
@@ -192,8 +205,47 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
 
   const chooseAsset = (asset: AssetSummary) => {
     setSelectedAssetId(asset.id);
+    setAnalysisResult(null);
+    setAnalysisError(null);
     setCatalogOpen(false);
     setToast(`${asset.displayName} обрано`);
+  };
+
+  const runAnalysis = async () => {
+    if (!selectedAsset) {
+      setToast("Спочатку оберіть актив");
+      setCatalogOpen(true);
+      return;
+    }
+    if (session !== "verified" || !launchContext.initData) {
+      setToast("Відкрийте Mini App через Telegram для аналізу");
+      return;
+    }
+    if (!selectedAsset.isAvailable) {
+      setToast("Цей актив зараз недоступний у Pocket");
+      return;
+    }
+    if (selectedAsset.dataState !== "ready" || selectedAsset.lastQuote === null) {
+      setToast("Очікуємо свіжі дані Pocket для цього активу");
+      return;
+    }
+
+    setAnalyzing(true);
+    setAnalysisError(null);
+    setAnalysisResult(null);
+    try {
+      const result = await analyzeAsset(selectedAsset.id, expiration, launchContext.initData);
+      setAnalysisResult(result);
+    } catch (error) {
+      const message =
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Не вдалося виконати аналіз";
+      setAnalysisError(message);
+      setToast(message);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   return (
@@ -240,39 +292,74 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
             </button>
 
             <div className="market-strip">
-              <div><span>Виплата</span><strong className={selectedAsset?.payoutPercent !== null && (selectedAsset?.payoutPercent ?? 100) < 70 ? "payout-warning" : ""}>{formatPayout(selectedAsset?.payoutPercent ?? null)}</strong></div>
+              <div><span>Виплата</span><strong>{formatPayout(selectedAsset?.payoutPercent ?? null)}</strong></div>
               <div><span>Котировка</span><strong>{formatQuote(selectedAsset?.lastQuote ?? null)}</strong></div>
               <div><span>Дані Pocket</span><strong className={selectedAsset?.dataState === "ready" ? "ready-value" : "waiting-value"}>{assetDataLabel(selectedAsset)}</strong></div>
             </div>
 
-            <fieldset className="expiry-block">
-              <div className="field-heading"><legend>Експірація</legend><span>{expiration * 60} секунд</span></div>
-              <div className="expiration-grid">
-                {([1, 2, 3] as const).map((minutes) => (
-                  <button
-                    aria-pressed={expiration === minutes}
-                    className={expiration === minutes ? "expiration active" : "expiration"}
-                    key={minutes}
-                    onClick={() => setExpiration(minutes)}
-                    type="button"
-                  ><strong>{minutes}</strong><span>хв</span></button>
-                ))}
-              </div>
-            </fieldset>
+            {analysisResult ? (
+              <section className={`analysis-result analysis-result--${analysisResult.direction}`} aria-live="polite">
+                <div className="result-hero">
+                  <span className="direction-arrow">{analysisResult.direction === "up" ? "↑" : "↓"}</span>
+                  <div className="direction-copy">
+                    <small>ПРОГНОЗ НА {analysisResult.expirationMinutes} ХВ</small>
+                    <h2>{analysisResult.direction === "up" ? "ВГОРУ" : "ВНИЗ"}</h2>
+                  </div>
+                  <div className={`strength-pill strength-pill--${analysisResult.strength}`}>
+                    <span>{strengthLabel(analysisResult.strength)}</span>
+                    <strong>{analysisResult.strengthScore}/100</strong>
+                  </div>
+                </div>
+                <div className="result-price-row">
+                  <span>Котировка Pocket</span><strong>{formatQuote(analysisResult.quote.price)}</strong>
+                  <span>Якість даних</span><strong>{analysisResult.data.qualityScore}/100</strong>
+                </div>
+                <p className="result-explanation">{analysisResult.explanation}</p>
+                <p className="result-risk"><span>РИЗИК</span>{analysisResult.risks[0] ?? "Коротка експірація чутлива до тикового шуму."}</p>
+                <div className="result-footer">
+                  <small>Сила сигналу, не ймовірність · {analysisResult.algorithmVersion}</small>
+                  <div>
+                    <button onClick={() => {
+                      setAnalysisResult(null);
+                      setAnalysisError(null);
+                    }} type="button">Змінити час</button>
+                    <button onClick={() => {
+                      setAnalysisResult(null);
+                      setAnalysisError(null);
+                      setCatalogOpen(true);
+                    }} type="button">Інший актив</button>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <>
+                <fieldset className="expiry-block">
+                  <div className="field-heading"><legend>Експірація</legend><span>{expiration * 60} секунд</span></div>
+                  <div className="expiration-grid">
+                    {([1, 2, 3] as const).map((minutes) => (
+                      <button
+                        aria-pressed={expiration === minutes}
+                        className={expiration === minutes ? "expiration active" : "expiration"}
+                        key={minutes}
+                        onClick={() => {
+                          setExpiration(minutes);
+                          setAnalysisError(null);
+                        }}
+                        type="button"
+                      ><strong>{minutes}</strong><span>хв</span></button>
+                    ))}
+                  </div>
+                </fieldset>
 
-            <div className="analysis-action">
-              <button className="analyze-button" onClick={() => {
-                if (!selectedAsset) {
-                  setToast("Спочатку оберіть актив");
-                  setCatalogOpen(true);
-                  return;
-                }
-                setToast(`Для ${selectedAsset.displayName} очікуємо живі котировки Pocket`);
-              }} type="button">
-                <Icon name="pulse" size={20} /> Проаналізувати
-              </button>
-              <p><Icon name="shield" size={14} /> Деморежим · без автоматичних угод</p>
-            </div>
+                <div className="analysis-action">
+                  {analysisError && <p className="analysis-inline-error">{analysisError}</p>}
+                  <button className="analyze-button" disabled={analyzing} onClick={() => void runAnalysis()} type="button">
+                    <Icon name="pulse" size={20} /> {analyzing ? "Аналізуємо Pocket…" : "Проаналізувати"}
+                  </button>
+                  <p><Icon name="shield" size={14} /> Деморежим · без автоматичних угод</p>
+                </div>
+              </>
+            )}
           </section>
         )}
 
@@ -347,7 +434,7 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
                 <button className={selectedAssetId === asset.id ? "asset-row selected" : "asset-row"} key={asset.id} onClick={() => chooseAsset(asset)} type="button">
                   <span className="pair-code"><strong>{asset.baseCurrency ?? "—"}</strong><i />{asset.quoteCurrency ?? "—"}</span>
                   <span className="asset-row-copy"><strong>{asset.displayName}</strong><small><i className={asset.isAvailable ? "availability-dot online" : "availability-dot"} />{asset.marketType === "otc" ? "OTC" : "Regular"} · {asset.isAvailable ? "Доступна" : "Закрита"}</small></span>
-                  <span className={(asset.payoutPercent ?? 0) < 70 ? "asset-payout low" : "asset-payout"}><strong>{formatPayout(asset.payoutPercent)}</strong><small>виплата</small></span>
+                  <span className="asset-payout"><strong>{formatPayout(asset.payoutPercent)}</strong><small>виплата</small></span>
                 </button>
               ))}
             </div>}

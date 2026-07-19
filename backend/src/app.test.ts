@@ -1,10 +1,15 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AnalysisRuntime } from "./analysis/analysis-service.js";
+import type { AnalysisResult } from "./analysis/types.js";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import type { AssetCatalog } from "./market-data/asset-catalog-service.js";
 import type { CandleStore } from "./market-data/candle-store.js";
-import type { PocketCollectorRuntime } from "./market-data/pocket-collector.js";
+import type {
+  PocketCollectorRuntime,
+  PocketCollectorStatus
+} from "./market-data/pocket-collector.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -27,6 +32,51 @@ const config: AppConfig = {
 };
 
 const apps: Awaited<ReturnType<typeof createApp>>[] = [];
+
+const READY_COLLECTOR_STATUS: PocketCollectorStatus = {
+  state: "ready",
+  configured: true,
+  enabled: true,
+  connected: true,
+  authenticated: true,
+  message: "ready",
+  activeAssets: 1,
+  priorityAssets: 0,
+  subscriptions: 1,
+  reconnectAttempt: 0,
+  reconnectScheduled: false,
+  lastConnectedAt: null,
+  lastAuthenticatedAt: null,
+  lastStreamAt: null,
+  lastTickAt: null,
+  lastCatalogAt: null,
+  lastHistoryAt: null,
+  quoteAgeMs: null,
+  rawPocketClockOffsetMs: null,
+  pocketClockOffsetMs: null,
+  pocketTimestampCorrectionMs: null,
+  acceptedTicks: 0,
+  rejectedTicks: 0,
+  historyCandles: 0,
+  lastError: null
+};
+
+function readyCollector(
+  prepareAsset = vi.fn(async (assetId: string) => ({
+    ok: true,
+    code: "POCKET_HISTORY_REQUESTED",
+    message: "prepared",
+    assetId,
+    collector: READY_COLLECTOR_STATUS
+  }))
+): PocketCollectorRuntime {
+  return {
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+    prepareAsset,
+    status: () => READY_COLLECTOR_STATUS
+  };
+}
 
 function createSignedInitData(): string {
   const fields = {
@@ -263,6 +313,102 @@ describe("system endpoints", () => {
     expect(rejected.statusCode).toBe(401);
     expect(accepted.statusCode).toBe(200);
     expect(prepareAsset).toHaveBeenCalledWith(assetId);
+  });
+
+  it("не запускає математичний аналіз без Telegram initData", async () => {
+    const collector = readyCollector();
+    const analysisRuntime: AnalysisRuntime = { analyze: vi.fn() };
+    const app = await createApp(config, { pocketCollector: collector, analysisRuntime });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/analyze",
+      payload: {
+        assetId: "123e4567-e89b-42d3-a456-426614174000",
+        expirationMinutes: 1
+      }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(analysisRuntime.analyze).not.toHaveBeenCalled();
+    expect(collector.prepareAsset).not.toHaveBeenCalled();
+  });
+
+  it("відхиляє експірацію поза 1–3 хвилинами", async () => {
+    const analysisRuntime: AnalysisRuntime = { analyze: vi.fn() };
+    const app = await createApp(config, {
+      pocketCollector: readyCollector(),
+      analysisRuntime
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/analyze",
+      headers: { "x-telegram-init-data": createSignedInitData() },
+      payload: {
+        assetId: "123e4567-e89b-42d3-a456-426614174000",
+        expirationMinutes: 5
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "INVALID_EXPIRATION" } });
+    expect(analysisRuntime.analyze).not.toHaveBeenCalled();
+  });
+
+  it("повертає прогноз лише для вибраного активу та пріоритезує його в Pocket", async () => {
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+    const analysis: AnalysisResult = {
+      asset: { id: assetId, pocketSymbol: "AUDCHF_otc", displayName: "AUD/CHF OTC", marketType: "otc" },
+      direction: "up",
+      expirationMinutes: 2,
+      expirationSeconds: 120,
+      quote: { price: 0.61566, pocketTime: "2026-07-18T18:30:00.000Z", ageMs: 120 },
+      payoutPercent: 92,
+      strengthScore: 74,
+      strength: "stronger",
+      strengthIsProbability: false,
+      regime: "trend",
+      volatility: "normal",
+      explanation: "Короткий рух і тики узгоджені вгору.",
+      reasons: ["Ціна вище EMA 9/20/21"],
+      risks: ["Коротка експірація чутлива до останніх тиків"],
+      algorithmVersion: "market-pulse-deterministic-otc-v1.0.0",
+      createdAt: "2026-07-18T18:30:00.100Z",
+      durationMs: 100,
+      data: { recentTicks: 25, candles30s: 40, candlesM1: 45, candlesM5: 12, qualityScore: 96 }
+    };
+    const analyze = vi.fn(async () => analysis);
+    const prepareAsset = vi.fn(async () => ({
+      ok: true,
+      code: "POCKET_HISTORY_REQUESTED",
+      message: "prepared",
+      assetId,
+      collector: READY_COLLECTOR_STATUS
+    }));
+    const app = await createApp(config, {
+      pocketCollector: readyCollector(prepareAsset),
+      analysisRuntime: { analyze }
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/analyze",
+      headers: { "x-telegram-init-data": createSignedInitData() },
+      payload: { assetId, expirationMinutes: 2 }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toMatchObject({
+      ok: true,
+      analysis: { direction: "up", payoutPercent: 92, strengthIsProbability: false }
+    });
+    expect(prepareAsset).toHaveBeenCalledWith(assetId);
+    expect(analyze).toHaveBeenCalledWith({ assetId, expirationMinutes: 2 });
   });
 
   it("не додає CORS-дозвіл для стороннього origin", async () => {

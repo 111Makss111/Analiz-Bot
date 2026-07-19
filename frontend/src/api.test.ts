@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAssets, prepareAsset } from "./api";
+import { analyzeAsset, fetchAssets, prepareAsset } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -46,5 +46,49 @@ describe("asset catalog API", () => {
         body: JSON.stringify({ assetId: "asset-1" })
       })
     );
+  });
+
+  it("надсилає лише вибраний актив та експірацію для математичного аналізу", async () => {
+    const analysis = {
+      direction: "up",
+      strengthScore: 71,
+      strengthIsProbability: false
+    };
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, analysis }), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await analyzeAsset("asset-1", 2, "query_id=test&hash=signed");
+
+    expect(result).toEqual(analysis);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:3000/api/analyze",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Telegram-Init-Data": "query_id=test&hash=signed" }),
+        body: JSON.stringify({ assetId: "asset-1", expirationMinutes: 2 })
+      })
+    );
+  });
+
+  it("показує точну технічну причину відмови backend", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: { code: "QUOTE_STALE", message: "Котировка Pocket застаріла" }
+          }),
+          { status: 503 }
+        )
+      )
+    );
+
+    await expect(analyzeAsset("asset-1", 1, "signed")).rejects.toMatchObject({
+      code: "QUOTE_STALE",
+      message: "Котировка Pocket застаріла"
+    });
   });
 });
