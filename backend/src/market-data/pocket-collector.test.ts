@@ -25,17 +25,13 @@ function candleStore(): CandleStore {
       assetId,
       timeframeSeconds,
       candles: []
-    })),
-    loadCurrent: vi.fn(async () => []),
-    loadCurrentForAssets: vi.fn(async () => []),
-    upsert: vi.fn(async () => undefined)
+    }))
   };
 }
 
-function assetStore(): PocketAssetStore {
+function assetStore(assets = [asset]): PocketAssetStore {
   return {
-    listActive: vi.fn(async () => [asset]),
-    findById: vi.fn(async (assetId) => (assetId === asset.id ? asset : null)),
+    findById: vi.fn(async (assetId) => assets.find((candidate) => candidate.id === assetId) ?? null),
     applyLiveCatalog: vi.fn(async () => undefined)
   };
 }
@@ -64,6 +60,17 @@ class FakeTransport implements PocketTransport {
     return true;
   }
 
+  unsubscribe(pocketSymbol: string): boolean {
+    const before = this.subscriptions.length;
+    for (let index = this.subscriptions.length - 1; index >= 0; index -= 1) {
+      if (this.subscriptions[index]!.startsWith(`${pocketSymbol}:`)) {
+        this.unique.delete(this.subscriptions[index]!);
+        this.subscriptions.splice(index, 1);
+      }
+    }
+    return this.subscriptions.length < before;
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
@@ -78,16 +85,19 @@ class FakeTransport implements PocketTransport {
   }
 }
 
-function createHarness(authPacket = '42["auth",{"session":"secret","isDemo":1,"uid":42,"platform":1}]') {
-  const persist = vi.fn<MarketDataWriter["persist"]>(async () => undefined);
-  const pipeline = new MarketDataPipeline({ persist });
+function createHarness(
+  authPacket = '42["auth",{"session":"secret","isDemo":1,"uid":42,"platform":1}]',
+  options: { assets?: (typeof asset)[]; maxAssets?: number } = {}
+) {
+  const persist = vi.fn<MarketDataWriter["persistCompletedCandles"]>(async () => undefined);
+  const pipeline = new MarketDataPipeline({ persistCompletedCandles: persist });
   let transport: FakeTransport | null = null;
   const collector = new PocketCollector({
     enabled: true,
     authPacket,
-    maxAssets: 80,
+    maxAssets: options.maxAssets ?? 3,
     staleAfterMs: 15_000,
-    assetStore: assetStore(),
+    assetStore: assetStore(options.assets),
     candleStore: candleStore(),
     pipeline,
     transportFactory: (handlers) => {
@@ -99,7 +109,7 @@ function createHarness(authPacket = '42["auth",{"session":"secret","isDemo":1,"u
 }
 
 describe("PocketCollector", () => {
-  it("авторизується лише в Demo, підписується один раз і передає свіжий tick у pipeline", async () => {
+  it("авторизується лише в Demo і передає tick вибраного активу тільки в live memory", async () => {
     const harness = createHarness();
     await harness.collector.start();
     const transport = harness.transport();
@@ -108,17 +118,16 @@ describe("PocketCollector", () => {
 
     transport!.open();
     transport!.authenticate();
-    expect(transport!.subscriptions).toEqual(["AUDCAD_otc:60"]);
+    expect(transport!.subscriptions).toEqual([]);
+    await harness.collector.prepareAsset(asset.id);
+    expect(transport!.subscriptions).toEqual(["AUDCAD_otc:30", "AUDCAD_otc:60"]);
 
     const now = Date.now();
     transport!.handlers.onStream([["AUDCAD_otc", now, 0.91234, "tick-1"]]);
-    await harness.pipeline.flushNow();
-
-    expect(harness.persist).toHaveBeenCalledWith(
-      [expect.objectContaining({ assetId: asset.id, price: 0.91234 })],
-      expect.arrayContaining([expect.objectContaining({ timeframeSeconds: 30 })]),
-      [expect.objectContaining({ price: 0.91234 })]
-    );
+    expect(harness.pipeline.getRecentTicks(asset.id, 0)).toEqual([
+      expect.objectContaining({ assetId: asset.id, price: 0.91234 })
+    ]);
+    expect(harness.persist).not.toHaveBeenCalled();
     expect(harness.collector.status()).toMatchObject({
       state: "ready",
       authenticated: true,
@@ -127,7 +136,7 @@ describe("PocketCollector", () => {
     await harness.collector.stop();
   });
 
-  it("після вибору активу додає 30s history без повторної M1 підписки", async () => {
+  it("після вибору активу підписує лише його 30s і M1 history", async () => {
     const harness = createHarness();
     await harness.collector.start();
     const transport = harness.transport()!;
@@ -137,7 +146,45 @@ describe("PocketCollector", () => {
     const result = await harness.collector.prepareAsset(asset.id);
 
     expect(result).toMatchObject({ ok: true, code: "POCKET_HISTORY_REQUESTED" });
-    expect(transport.subscriptions).toEqual(["AUDCAD_otc:60", "AUDCAD_otc:30"]);
+    expect(transport.subscriptions).toEqual(["AUDCAD_otc:30", "AUDCAD_otc:60"]);
+    await harness.collector.stop();
+  });
+
+  it("тримає не більше заданої кількості live-активів і відписує найстаріший", async () => {
+    const second = {
+      ...asset,
+      id: "223e4567-e89b-42d3-a456-426614174000",
+      pocketSymbol: "EURUSD_otc",
+      displayName: "EUR/USD OTC"
+    };
+    const third = {
+      ...asset,
+      id: "323e4567-e89b-42d3-a456-426614174000",
+      pocketSymbol: "GBPUSD_otc",
+      displayName: "GBP/USD OTC"
+    };
+    const harness = createHarness(undefined, { assets: [asset, second, third], maxAssets: 2 });
+    await harness.collector.start();
+    const transport = harness.transport()!;
+    transport.open();
+    transport.authenticate();
+
+    await harness.collector.prepareAsset(asset.id);
+    await harness.collector.prepareAsset(second.id);
+    await harness.collector.prepareAsset(third.id);
+
+    expect(transport.subscriptions).toEqual([
+      "EURUSD_otc:30",
+      "EURUSD_otc:60",
+      "GBPUSD_otc:30",
+      "GBPUSD_otc:60"
+    ]);
+    expect(harness.collector.status()).toMatchObject({
+      activeAssets: 2,
+      priorityAssets: 2,
+      subscriptions: 4,
+      maxPriorityAssets: 2
+    });
     await harness.collector.stop();
   });
 
@@ -163,6 +210,7 @@ describe("PocketCollector", () => {
     const transport = harness.transport()!;
     transport.open();
     transport.authenticate();
+    await harness.collector.prepareAsset(asset.id);
     transport.handlers.onStream([["AUDCAD_otc", Date.now() - 60_000, 0.9]]);
     await harness.pipeline.flushNow();
 
@@ -177,6 +225,7 @@ describe("PocketCollector", () => {
     const transport = harness.transport()!;
     transport.open();
     transport.authenticate();
+    await harness.collector.prepareAsset(asset.id);
     const now = Date.now();
     const shifted = now + 2 * 60 * 60 * 1_000;
 
@@ -185,13 +234,10 @@ describe("PocketCollector", () => {
       ["AUDCAD_otc", shifted + 1, 0.92, "shift-2"],
       ["AUDCAD_otc", shifted + 2, 0.93, "shift-3"]
     ]);
-    await harness.pipeline.flushNow();
-
-    expect(harness.persist).toHaveBeenCalledWith(
-      [expect.objectContaining({ price: 0.93, pocketTimeMs: expect.any(Number) })],
-      expect.any(Array),
-      [expect.objectContaining({ price: 0.93 })]
-    );
+    expect(harness.pipeline.getRecentTicks(asset.id, 0)).toEqual([
+      expect.objectContaining({ price: 0.93, pocketTimeMs: expect.any(Number) })
+    ]);
+    expect(harness.persist).not.toHaveBeenCalled();
     expect(harness.collector.status()).toMatchObject({
       state: "ready",
       acceptedTicks: 1,
@@ -209,6 +255,7 @@ describe("PocketCollector", () => {
     const transport = harness.transport()!;
     transport.open();
     transport.authenticate();
+    await harness.collector.prepareAsset(asset.id);
     const now = Date.now();
     const shift = 2 * 60 * 60 * 1_000;
 
@@ -227,11 +274,7 @@ describe("PocketCollector", () => {
       expect(harness.collector.status().historyCandles).toBeGreaterThanOrEqual(1)
     );
     expect(harness.persist).toHaveBeenCalledWith(
-      [],
-      expect.arrayContaining([
-        expect.objectContaining({ timeframeSeconds: 60, isComplete: true })
-      ]),
-      []
+      expect.arrayContaining([expect.objectContaining({ timeframeSeconds: 60, isComplete: true })])
     );
     await harness.collector.stop();
   });

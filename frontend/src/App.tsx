@@ -386,8 +386,8 @@ export function App({ launchContext = browserLaunchContext }: { launchContext?: 
             <div className="system-panel">
               <div><span><i className={`mini-dot mini-dot--${connection}`} />Render API</span><strong>{connection === "online" ? "Працює" : "Недоступний"}</strong></div>
               <div><span><i className={`mini-dot mini-dot--${session === "verified" ? "online" : "checking"}`} />Telegram</span><strong>{session === "verified" ? "Підтверджено" : "Перевірка"}</strong></div>
-              <div><span><i className={`mini-dot mini-dot--${health?.database === "configured" ? "online" : "checking"}`} />Supabase</span><strong>{health?.database === "configured" ? "Підключено" : "Очікує"}</strong></div>
-              <div><span><i className={`mini-dot mini-dot--${health?.pocket === "ready" ? "online" : health?.pocket === "error" ? "offline" : "waiting"}`} />Pocket</span><strong>{health?.pocket === "ready" ? "Підключено" : health?.pocket === "error" ? "Помилка сесії" : health?.pocket === "not_configured" ? "Потрібна сесія" : "Підключення"}</strong></div>
+              <div><span><i className={`mini-dot mini-dot--${health?.database === "ready" ? "online" : health?.database === "degraded" ? "offline" : "checking"}`} />Supabase</span><strong>{health?.database === "ready" ? "Працює" : health?.database === "degraded" ? "Недоступна" : "Не налаштовано"}</strong></div>
+              <div><span><i className={`mini-dot mini-dot--${health?.pocket === "ready" ? "online" : health?.pocket === "error" ? "offline" : "waiting"}`} />Pocket</span><strong>{health?.pocket === "ready" ? "Підключено" : health?.pocket === "error" ? "Помилка сесії" : health?.pocket === "disabled" ? "Колектор вимкнено" : health?.pocket === "not_configured" ? "Потрібна сесія" : "Підключення"}</strong></div>
             </div>
             <div className="settings-panel">
               <button onClick={() => setHaptics((value) => !value)} type="button"><span><strong>Тактильний відгук</strong><small>Для основних дій</small></span><i className={haptics ? "switch on" : "switch"} /></button>

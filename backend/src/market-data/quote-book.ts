@@ -69,4 +69,8 @@ export class QuoteBook {
       staleReason
     };
   }
+
+  remove(assetId: string): void {
+    this.latest.delete(assetId);
+  }
 }

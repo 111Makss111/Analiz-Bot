@@ -27,7 +27,7 @@ const config: AppConfig = {
   pocketCollectorEnabled: true,
   pocketAuthPacket: "",
   pocketDemoEndpoint: "wss://demo-api-eu.po.market",
-  pocketMaxAssets: 80,
+  pocketMaxAssets: 3,
   pocketStaleAfterMs: 15_000
 };
 
@@ -58,6 +58,9 @@ const READY_COLLECTOR_STATUS: PocketCollectorStatus = {
   acceptedTicks: 0,
   rejectedTicks: 0,
   historyCandles: 0,
+  maxPriorityAssets: 3,
+  catalogWrites: 0,
+  catalogWritesSkipped: 0,
   lastError: null
 };
 
@@ -129,6 +132,11 @@ describe("system endpoints", () => {
       start: vi.fn(),
       stop: vi.fn(),
       requestRefresh: vi.fn(),
+      diagnostics: vi.fn(() => ({
+        cachedAssets: 1,
+        cacheAgeMs: 0,
+        lastRepositoryError: null
+      })),
       list: vi.fn(async () => ({
         ok: true,
         category: "currency",
@@ -181,9 +189,6 @@ describe("system endpoints", () => {
 
   it("повертає збережені M1 свічки вибраного активу", async () => {
     const candleStore: CandleStore = {
-      upsert: vi.fn(async () => undefined),
-      loadCurrent: vi.fn(async () => []),
-      loadCurrentForAssets: vi.fn(async () => []),
       list: vi.fn(async (assetId, timeframeSeconds) => ({
         ok: true,
         status: "ready",
@@ -291,6 +296,9 @@ describe("system endpoints", () => {
         acceptedTicks: 0,
         rejectedTicks: 0,
         historyCandles: 0,
+        maxPriorityAssets: 3,
+        catalogWrites: 0,
+        catalogWritesSkipped: 0,
         lastError: null
       })
     };

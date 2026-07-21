@@ -14,6 +14,7 @@ import type {
 } from "./analysis/types.js";
 import type { AppConfig } from "./config.js";
 import { createSupabaseAdminClient } from "./database/client.js";
+import { DatabaseHealthMonitor, type DatabaseHealthState } from "./database/health-monitor.js";
 import { AssetCatalogService, type AssetCatalog } from "./market-data/asset-catalog-service.js";
 import { SupabaseAssetCatalogRepository } from "./market-data/asset-catalog-repository.js";
 import {
@@ -29,6 +30,7 @@ import {
 import { SupabasePocketAssetStore } from "./market-data/pocket-asset-store.js";
 import { MarketDataPipeline } from "./market-data/market-data-pipeline.js";
 import { SupabaseMarketDataWriter } from "./market-data/market-data-writer.js";
+import { MarketDataRetentionService } from "./market-data/retention-service.js";
 import { PocketPublicCatalogSource } from "./market-data/pocket-public-catalog.js";
 import { SocketIoPocketTransport } from "./market-data/pocket-transport.js";
 import {
@@ -44,9 +46,9 @@ export type HealthResponse = {
   ok: true;
   service: "market-pulse-backend";
   status: "ready";
-  database: "configured" | "not_configured";
+  database: DatabaseHealthState;
   telegram: "configured" | "not_configured";
-  pocket: "ready" | "warming" | "not_configured" | "error";
+  pocket: "ready" | "warming" | "disabled" | "not_configured" | "error";
   timestamp: string;
 };
 
@@ -82,19 +84,24 @@ export async function createApp(
     logger: config.nodeEnv !== "test",
     trustProxy: true
   });
-  const assetCatalog =
-    dependencies.assetCatalog ??
-    new AssetCatalogService({
-      repository: database ? new SupabaseAssetCatalogRepository(database) : null,
-      source: new PocketPublicCatalogSource(),
-      onRefreshError: (error) => app.log.warn({ err: error }, "Pocket asset catalog refresh failed")
-    });
   const candleStore =
     dependencies.candleStore ??
     (database ? new SupabaseCandleStore(database) : new UnavailableCandleStore());
   const marketDataPipeline = new MarketDataPipeline(
     database ? new SupabaseMarketDataWriter(database) : null,
     (error) => app.log.error({ err: error }, "Pocket market-data persistence failed")
+  );
+  const assetCatalog =
+    dependencies.assetCatalog ??
+    new AssetCatalogService({
+      repository: database ? new SupabaseAssetCatalogRepository(database) : null,
+      source: new PocketPublicCatalogSource(),
+      liveQuotes: marketDataPipeline,
+      onRefreshError: (error) => app.log.warn({ err: error }, "Pocket asset catalog refresh failed")
+    });
+  const databaseHealth = new DatabaseHealthMonitor(database);
+  const retention = new MarketDataRetentionService(database, (error) =>
+    app.log.warn({ err: error }, "Pocket market-data retention failed")
   );
   const pocketCollector =
     dependencies.pocketCollector ??
@@ -115,7 +122,7 @@ export async function createApp(
   const analysisRuntime =
     dependencies.analysisRuntime ??
     (database
-      ? new AnalysisService(new SupabaseAnalysisDataSource(database, candleStore))
+      ? new AnalysisService(new SupabaseAnalysisDataSource(database, candleStore, marketDataPipeline))
       : new UnavailableAnalysisRuntime());
 
   app.addHook("onReady", async () => {
@@ -134,17 +141,18 @@ export async function createApp(
   });
 
   app.get("/api/wake", async () => {
-    assetCatalog.requestRefresh();
+    retention.request();
     return { ok: true as const };
   });
 
   app.get<{ Reply: HealthResponse }>("/api/health", async () => {
     const pocketState = pocketCollector.status().state;
+    const databaseState = await databaseHealth.check();
     return {
       ok: true,
       service: "market-pulse-backend",
       status: "ready",
-      database: database ? "configured" : "not_configured",
+      database: databaseState.state,
       telegram:
         config.telegramBotToken && config.telegramWebhookSecret && config.backendPublicUrl
           ? "configured"
@@ -152,7 +160,9 @@ export async function createApp(
       pocket:
         pocketState === "ready"
           ? "ready"
-          : pocketState === "not_configured" || pocketState === "disabled"
+          : pocketState === "disabled"
+            ? "disabled"
+            : pocketState === "not_configured"
             ? "not_configured"
             : pocketState === "auth_rejected"
               ? "error"
@@ -167,11 +177,15 @@ export async function createApp(
     if (!config.diagnosticsSecret || !verifyWebhookSecret(receivedSecret, config.diagnosticsSecret)) {
       return reply.code(401).send({ ok: false });
     }
+    const databaseState = await databaseHealth.check(true);
     return reply.header("Cache-Control", "no-store").send({
       ok: true,
       timestamp: new Date().toISOString(),
-      database: database ? "configured" : "not_configured",
-      pocket: pocketCollector.status()
+      database: databaseState,
+      pocket: pocketCollector.status(),
+      marketData: marketDataPipeline.status(),
+      catalog: assetCatalog.diagnostics(),
+      retention: retention.status()
     });
   });
 

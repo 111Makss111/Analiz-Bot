@@ -38,6 +38,7 @@ describe("loadConfig", () => {
     expect(config.backendPublicUrl).toBe("https://market-pulse-backend.onrender.com");
     expect(config.pocketDemoEndpoint).toBe("wss://demo-api-eu.po.market");
     expect(config.pocketCollectorEnabled).toBe(true);
+    expect(config.pocketMaxAssets).toBe(3);
   });
 
   it("не дозволяє часткову Supabase-конфігурацію", () => {
@@ -66,5 +67,12 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...productionEnv, POCKET_COLLECTOR_ENABLED: "yes" })).toThrow(
       "true або false"
     );
+  });
+
+  it("жорстко обмежує кількість одночасних live-активів", () => {
+    expect(loadConfig({ ...productionEnv, POCKET_MAX_ACTIVE_ASSETS: "5" }).pocketMaxAssets).toBe(5);
+    expect(() =>
+      loadConfig({ ...productionEnv, POCKET_MAX_ACTIVE_ASSETS: "80" })
+    ).toThrow("не більше 5");
   });
 });

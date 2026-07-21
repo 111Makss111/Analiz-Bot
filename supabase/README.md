@@ -27,3 +27,7 @@ supabase db reset
 2. `20260718170000_currency_asset_catalog.sql`
 3. `20260718180000_candle_tick_integrity.sql`
 4. `20260718190000_pocket_collector_runtime.sql`
+5. `20260721100000_compact_market_data.sql`
+
+Остання міграція обов’язкова перед повторним увімкненням Pocket collector. Вона вимикає
+старий high-volume RPC для сирих тиків і дозволяє лише компактний запис завершених свічок.

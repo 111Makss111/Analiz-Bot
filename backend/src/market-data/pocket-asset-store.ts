@@ -26,25 +26,12 @@ function mapAsset(row: AssetRow): CollectorAsset {
 }
 
 export interface PocketAssetStore {
-  listActive(limit: number): Promise<CollectorAsset[]>;
   findById(assetId: string): Promise<CollectorAsset | null>;
   applyLiveCatalog(assets: PocketLiveAsset[], receivedAt: string): Promise<void>;
 }
 
 export class SupabasePocketAssetStore implements PocketAssetStore {
   constructor(private readonly client: SupabaseClient) {}
-
-  async listActive(limit: number): Promise<CollectorAsset[]> {
-    const { data, error } = await this.client
-      .from("assets")
-      .select("id,pocket_symbol,display_name,market_type")
-      .eq("asset_category", "currency")
-      .eq("is_available", true)
-      .order("payout_percent", { ascending: false, nullsFirst: false })
-      .limit(limit);
-    if (error) throw new Error(`Supabase collector asset query failed: ${error.message}`);
-    return ((data ?? []) as AssetRow[]).map(mapAsset);
-  }
 
   async findById(assetId: string): Promise<CollectorAsset | null> {
     const { data, error } = await this.client
