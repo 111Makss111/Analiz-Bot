@@ -45,6 +45,17 @@ function readPositiveInteger(value: string | undefined, fallback: number, name: 
   return parsed;
 }
 
+function readBoundedPositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  maximum: number,
+  name: string
+): number {
+  const parsed = readPositiveInteger(value, fallback, name);
+  if (parsed > maximum) throw new Error(`${name} має бути не більше ${maximum}`);
+  return parsed;
+}
+
 function readBoolean(value: string | undefined, fallback: boolean, name: string): boolean {
   if (value === undefined || value === "") return fallback;
   if (value === "true") return true;
@@ -205,7 +216,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ),
     pocketAuthPacket: env.POCKET_AUTH_PACKET?.trim() ?? "",
     pocketDemoEndpoint: readPocketEndpoint(env.POCKET_DEMO_REGION),
-    pocketMaxAssets: readPositiveInteger(env.POCKET_MAX_ASSETS, 80, "POCKET_MAX_ASSETS"),
+    pocketMaxAssets: readBoundedPositiveInteger(
+      env.POCKET_MAX_ACTIVE_ASSETS,
+      3,
+      5,
+      "POCKET_MAX_ACTIVE_ASSETS"
+    ),
     pocketStaleAfterMs: readPositiveInteger(
       env.POCKET_STALE_AFTER_MS,
       15_000,

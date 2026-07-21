@@ -1,5 +1,9 @@
 # Етап 6: тики, котировка та свічки
 
+> Початковий high-volume writer цього етапу замінено міграцією
+> [`collector-load-control-v1`](collector-load-control-v1.md). Нижче збережено опис ядра свічок,
+> але live ticks і незакриті candle snapshots більше не записуються щосекунди у Supabase.
+
 ## Реалізоване ядро
 
 - `QuoteBook` приймає лише валідні Pocket-тики та відкидає дублікати й старі повідомлення.
@@ -7,9 +11,9 @@
 - `CandleEngine` одночасно формує 30-секундні, M1 та M5 OHLC-свічки.
 - Прогалини у тиках не заповнюються вигаданими свічками.
 - `tickCount` зберігається як кількість прийнятих тиків і не називається біржовим обсягом.
-- `MarketDataPipeline` раз на секунду пакетно записує тики, candle snapshots та останні котировки.
-- Один SQL-виклик `ingest_pocket_market_data` атомарно оновлює всі три набори даних.
-- Після restart незакриті buckets відновлюються з `last_tick_at`, тому старий повторний тик не переписує їхній `close`.
+- `MarketDataPipeline` тримає останні 10 хвилин тиків і незакриті candle snapshots у bounded Render memory.
+- Supabase отримує лише завершені свічки через `ingest_pocket_completed_candles` один batch кожні 15 секунд.
+- Після restart вибраний актив отримує збережені завершені свічки та свіжу Pocket history, без повторного накопичення 35 хвилин.
 
 Межі bucket визначаються лише Pocket server time:
 
@@ -36,6 +40,7 @@ GET /api/assets/:assetId/candles?timeframe=300&limit=120
 
 ```text
 supabase/migrations/20260718180000_candle_tick_integrity.sql
+supabase/migrations/20260721100000_compact_market_data.sql
 ```
 
 ```powershell

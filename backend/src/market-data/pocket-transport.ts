@@ -17,6 +17,7 @@ export interface PocketTransport {
   connect(auth: PocketDemoAuth): void;
   disconnect(): void;
   subscribe(pocketSymbol: string, periodSeconds: 30 | 60): boolean;
+  unsubscribe(pocketSymbol: string): boolean;
   isConnected(): boolean;
 }
 
@@ -110,6 +111,16 @@ export class SocketIoPocketTransport implements PocketTransport {
       this.socket.emit("subscribeSymbol", pocketSymbol);
     }
     this.socket.emit("changeSymbol", { asset: pocketSymbol, period: periodSeconds });
+    return true;
+  }
+
+  unsubscribe(pocketSymbol: string): boolean {
+    if (!this.symbolSubscriptions.has(pocketSymbol)) return false;
+    this.symbolSubscriptions.delete(pocketSymbol);
+    for (const key of [...this.historySubscriptions]) {
+      if (key.startsWith(`${pocketSymbol}:`)) this.historySubscriptions.delete(key);
+    }
+    if (this.socket.connected) this.socket.emit("unsubscribeSymbol", pocketSymbol);
     return true;
   }
 

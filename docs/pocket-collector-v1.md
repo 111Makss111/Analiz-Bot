@@ -2,18 +2,21 @@
 
 Колектор працює всередині Render backend і передає лише дані в напрямку Pocket → Market Pulse. Команд відкриття, закриття або копіювання угод у транспорті немає.
 
+> Схему зберігання v1 замінено етапом [`collector-load-control-v1`](collector-load-control-v1.md):
+> сирі live ticks більше не записуються у Supabase, а підписки створюються лише для вибраних активів.
+
 ## Потік даних
 
-1. Backend відновлює кеш активів і незавершені 30s/M1/M5 candles із Supabase.
+1. Backend одразу запускає bounded in-memory pipeline без читання всіх активів і незавершених свічок.
 2. `POCKET_AUTH_PACKET` перевіряється локально на Render. Дозволено тільки `isDemo=1`.
 3. Socket.IO підключається до вибраного Pocket Demo endpoint і очікує `successauth`.
-4. Live `updateAssets` оновлює доступність та виплати, а `updateStream` передає тики у `MarketDataPipeline`.
+4. Live `updateAssets` оновлює доступність та виплати, а `updateStream` передає тики вибраних активів у пам’ять `MarketDataPipeline`.
 5. `updateHistoryNewFast`, `updateHistoryNew` і `loadHistoryPeriod` заповнюють пропущену історію без очікування нових 35 свічок.
-6. Вибраний користувачем актив через `POST /api/assets/prepare` отримує додатковий запит 30s та M1 history.
+6. Тільки вибраний користувачем актив через `POST /api/assets/prepare` отримує live-підписку та запити 30s/M1 history.
 
 Якщо числовий timestamp Pocket містить часовий пояс термінала, колектор калібрує лише стабільний зсув, кратний 15 хвилинам і в межах реальних UTC-зон. Потрібні три узгоджені live-тики. Після нормалізації повторно застосовується звичайна перевірка свіжості, тому довільні майбутні або застарілі дані не стають валідними. Та сама зафіксована корекція застосовується до Pocket history перед побудовою 30s/M1/M5 buckets.
 
-Повторна підписка на той самий символ і період дедуплікується. Socket.IO heartbeat обробляє ping timeout, а collector використовує обмежений backoff 1–30 секунд. Пакет, який Pocket не підтвердив за 20 секунд, позначається як відхилений і не запускається у нескінченному циклі.
+Повторна підписка на той самий символ і період дедуплікується. Одночасно активні максимум 3 вибрані активи за замовчуванням; найстаріший автоматично відписується. Socket.IO heartbeat обробляє ping timeout, а collector використовує обмежений backoff 1–30 секунд. Пакет, який Pocket не підтвердив за 20 секунд, позначається як відхилений і не запускається у нескінченному циклі.
 
 ## Безпека
 
@@ -30,7 +33,7 @@
 POCKET_COLLECTOR_ENABLED=true
 POCKET_AUTH_PACKET=42["auth",{..."isDemo":1...}]
 POCKET_DEMO_REGION=EU
-POCKET_MAX_ASSETS=80
+POCKET_MAX_ACTIVE_ASSETS=3
 POCKET_STALE_AFTER_MS=15000
 DIAGNOSTICS_SECRET=long-random-server-only-secret
 ```
@@ -52,10 +55,11 @@ DIAGNOSTICS_SECRET=long-random-server-only-secret
 
 ## Supabase migration
 
-Після трьох попередніх міграцій застосувати:
+Після попередніх міграцій обов’язково застосувати обидві:
 
 ```text
 supabase/migrations/20260718190000_pocket_collector_runtime.sql
+supabase/migrations/20260721100000_compact_market_data.sql
 ```
 
 Міграція зберігає UUID існуючих активів, але переводить старі ключі на точні WebSocket symbols (`AUD/CAD OTC` → `AUDCAD_otc`). Якщо обидві форми вже існують, вона об’єднує записи, переносить тики, свічки, прогнози й діагностику на canonical UUID та усуває лише дубль. Історія та зовнішні ключі не втрачаються.

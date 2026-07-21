@@ -11,9 +11,9 @@ export type HealthResponse = {
   ok: true;
   service: string;
   status: "ready";
-  database: "configured" | "not_configured";
+  database: "ready" | "degraded" | "not_configured";
   telegram: "configured" | "not_configured";
-  pocket: "ready" | "warming" | "not_configured" | "error";
+  pocket: "ready" | "warming" | "disabled" | "not_configured" | "error";
   timestamp: string;
 };
 

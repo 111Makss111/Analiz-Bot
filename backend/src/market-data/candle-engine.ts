@@ -138,6 +138,13 @@ export class CandleEngine {
     });
   }
 
+  release(assetId: string): void {
+    this.quoteBook.remove(assetId);
+    for (const timeframeSeconds of SUPPORTED_TIMEFRAMES) {
+      this.current.delete(candleKey(assetId, timeframeSeconds));
+    }
+  }
+
   getQuote(assetId: string, nowMs: number, maxAgeMs: number) {
     return this.quoteBook.get(assetId, nowMs, maxAgeMs);
   }

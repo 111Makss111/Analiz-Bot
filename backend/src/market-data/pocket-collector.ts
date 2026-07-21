@@ -16,7 +16,12 @@ import type {
   PocketTransportFactory,
   PocketTransportHandlers
 } from "./pocket-transport.js";
-import type { MarketCandle, PocketTick, TimeframeSeconds } from "./types.js";
+import type {
+  MarketCandle,
+  PocketTick,
+  StoredCandle,
+  TimeframeSeconds
+} from "./types.js";
 
 export type PocketCollectorState =
   | "disabled"
@@ -53,6 +58,9 @@ export type PocketCollectorStatus = {
   acceptedTicks: number;
   rejectedTicks: number;
   historyCandles: number;
+  maxPriorityAssets: number;
+  catalogWrites: number;
+  catalogWritesSkipped: number;
   lastError: string | null;
 };
 
@@ -93,6 +101,8 @@ const AUTH_TIMEOUT_MS = 20_000;
 const WATCHDOG_INTERVAL_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const MAX_PENDING_HISTORIES = 200;
+const CATALOG_WRITE_INTERVAL_MS = 30_000;
+const HISTORY_CANDLE_LIMITS: Record<TimeframeSeconds, number> = { 30: 120, 60: 120, 300: 36 };
 
 export function reconnectDelayMs(attempt: number): number {
   const exponent = Math.min(5, Math.max(0, Math.trunc(attempt) - 1));
@@ -110,6 +120,35 @@ function iso(timestampMs: number | null): string | null {
 
 function candleKey(candle: MarketCandle) {
   return `${candle.assetId}:${candle.timeframeSeconds}:${candle.openTimeMs}`;
+}
+
+function storedToMarketCandle(candle: StoredCandle): MarketCandle | null {
+  const openTimeMs = Date.parse(candle.openTime);
+  const closeTimeMs = Date.parse(candle.closeTime);
+  const lastTickTimeMs = Date.parse(candle.lastTickAt);
+  if (![openTimeMs, closeTimeMs, lastTickTimeMs].every(Number.isFinite)) return null;
+  return {
+    assetId: candle.assetId,
+    timeframeSeconds: candle.timeframeSeconds,
+    openTimeMs,
+    closeTimeMs,
+    lastTickTimeMs,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    tickCount: candle.tickCount,
+    isComplete: candle.isComplete
+  };
+}
+
+function limitHistoricalCandles(candles: MarketCandle[]): MarketCandle[] {
+  return ([30, 60, 300] as const).flatMap((timeframeSeconds) =>
+    candles
+      .filter((candle) => candle.timeframeSeconds === timeframeSeconds && candle.isComplete)
+      .sort((left, right) => left.openTimeMs - right.openTimeMs)
+      .slice(-HISTORY_CANDLE_LIMITS[timeframeSeconds])
+  );
 }
 
 function buildHistoricalCandles(
@@ -226,8 +265,14 @@ export class PocketCollector implements PocketCollectorRuntime {
   private acceptedTicks = 0;
   private rejectedTicks = 0;
   private historyCandles = 0;
+  private catalogWrites = 0;
+  private catalogWritesSkipped = 0;
   private lastError: string | null = null;
   private catalogWrite: Promise<void> = Promise.resolve();
+  private catalogTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingCatalog: { assets: ReturnType<typeof parsePocketAssets>; receivedAtMs: number; fingerprint: string } | null = null;
+  private lastCatalogPersistAtMs = 0;
+  private lastCatalogFingerprint: string | null = null;
   private readonly clock: PocketClock;
   private readonly pendingHistories: PendingHistory[] = [];
 
@@ -259,11 +304,6 @@ export class PocketCollector implements PocketCollectorRuntime {
     }
 
     try {
-      await this.reloadAssets();
-      const restored = await this.options.candleStore.loadCurrentForAssets(
-        [...this.assetsBySymbol.values()].map((asset) => asset.id)
-      );
-      this.options.pipeline.restoreCurrentCandles(restored);
       this.options.pipeline.start();
       this.transport = this.options.transportFactory(this.handlers());
       this.startWatchdog();
@@ -283,6 +323,9 @@ export class PocketCollector implements PocketCollectorRuntime {
     this.clearAuthTimer();
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.watchdogTimer = null;
+    if (this.catalogTimer) clearTimeout(this.catalogTimer);
+    this.catalogTimer = null;
+    this.pendingCatalog = null;
     this.transport?.disconnect();
     this.transport = null;
     this.connected = false;
@@ -324,6 +367,9 @@ export class PocketCollector implements PocketCollectorRuntime {
       acceptedTicks: this.acceptedTicks,
       rejectedTicks: this.rejectedTicks,
       historyCandles: this.historyCandles,
+      maxPriorityAssets: this.options.maxAssets,
+      catalogWrites: this.catalogWrites,
+      catalogWritesSkipped: this.catalogWritesSkipped,
       lastError: this.lastError
     };
   }
@@ -340,18 +386,28 @@ export class PocketCollector implements PocketCollectorRuntime {
       };
     }
 
-    this.priorityAssetIds.add(asset.id);
-    this.assetsBySymbol.set(asset.pocketSymbol, asset);
-    const current = await this.options.candleStore.loadCurrent(asset.id);
-    this.options.pipeline.restoreCurrentCandles(current);
+    this.promoteAsset(asset);
     const requested = this.authenticated ? this.subscribeAsset(asset, true) : 0;
+    const active =
+      this.authenticated &&
+      ([30, 60] as const).every((period) =>
+        this.requestedSubscriptions.has(`${asset.pocketSymbol}:${period}`)
+      );
+    void this.hydrateStoredCandles(asset);
     return {
       ok: true,
-      code: requested > 0 ? "POCKET_HISTORY_REQUESTED" : "POCKET_ASSET_QUEUED",
+      code:
+        requested > 0
+          ? "POCKET_HISTORY_REQUESTED"
+          : active
+            ? "POCKET_ASSET_READY"
+            : "POCKET_ASSET_QUEUED",
       message:
         requested > 0
           ? "Актив отримав пріоритет; запитано історію 30s і M1"
-          : "Актив отримав пріоритет і очікує з’єднання Pocket",
+          : active
+            ? "Актив уже має пріоритетну live-підписку"
+            : "Актив отримав пріоритет і очікує з’єднання Pocket",
       assetId,
       pocketSymbol: asset.pocketSymbol,
       collector: this.status()
@@ -408,7 +464,7 @@ export class PocketCollector implements PocketCollectorRuntime {
     this.state = "ready";
     this.message = "Pocket Demo підключено";
     this.lastError = null;
-    this.subscribeAll();
+    this.subscribePriorityAssets();
   }
 
   private handleAuthRejected(message: string): void {
@@ -496,16 +552,33 @@ export class PocketCollector implements PocketCollectorRuntime {
     if (assets.length === 0) return;
     const receivedAtMs = Date.now();
     this.lastCatalogAt = receivedAtMs;
-    this.catalogWrite = this.catalogWrite
-      .then(async () => {
-        await this.options.assetStore.applyLiveCatalog(assets, new Date(receivedAtMs).toISOString());
-        await this.reloadAssets();
-        if (this.authenticated) this.subscribeAll();
-      })
-      .catch((error) => {
-        this.lastError = safeMessage(error);
-        this.options.onError?.(error, "Pocket live catalog persistence failed");
+    const liveBySymbol = new Map(assets.map((asset) => [asset.pocketSymbol, asset]));
+    for (const [symbol, selected] of this.assetsBySymbol) {
+      const live = liveBySymbol.get(symbol);
+      if (!live) continue;
+      this.assetsBySymbol.set(symbol, {
+        ...selected,
+        displayName: live.displayName,
+        marketType: live.marketType
       });
+    }
+
+    const fingerprint = JSON.stringify(
+      assets
+        .map((asset) => [
+          asset.pocketSymbol,
+          asset.isAvailable,
+          asset.payoutPercent,
+          asset.displayName
+        ])
+        .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    );
+    if (fingerprint === this.lastCatalogFingerprint && !this.pendingCatalog) {
+      this.catalogWritesSkipped += 1;
+      return;
+    }
+    this.pendingCatalog = { assets, receivedAtMs, fingerprint };
+    this.scheduleCatalogPersist();
   }
 
   private async handleHistory(payload: unknown): Promise<void> {
@@ -541,7 +614,7 @@ export class PocketCollector implements PocketCollectorRuntime {
     ]) {
       candles.set(candleKey(candle), candle);
     }
-    const values = [...candles.values()];
+    const values = limitHistoricalCandles([...candles.values()]);
     if (values.length === 0) return;
     try {
       await this.options.pipeline.persistHistoricalCandles(values);
@@ -572,27 +645,50 @@ export class PocketCollector implements PocketCollectorRuntime {
     if (parsePocketStream(payload).length > 0) this.handleStream(payload);
   }
 
-  private async reloadAssets(): Promise<void> {
-    const priority = new Map(
-      [...this.assetsBySymbol.values()]
-        .filter((asset) => this.priorityAssetIds.has(asset.id))
-        .map((asset) => [asset.pocketSymbol, asset])
-    );
-    const active = await this.options.assetStore.listActive(this.options.maxAssets);
-    this.assetsBySymbol.clear();
-    for (const asset of [...priority.values(), ...active]) {
-      if (this.assetsBySymbol.size >= this.options.maxAssets && !this.priorityAssetIds.has(asset.id)) continue;
-      this.assetsBySymbol.set(asset.pocketSymbol, asset);
+  private promoteAsset(asset: CollectorAsset): void {
+    if (this.priorityAssetIds.has(asset.id)) this.priorityAssetIds.delete(asset.id);
+    while (this.priorityAssetIds.size >= this.options.maxAssets) {
+      const evictedId = this.priorityAssetIds.values().next().value as string | undefined;
+      if (!evictedId) break;
+      this.priorityAssetIds.delete(evictedId);
+      const evicted = [...this.assetsBySymbol.values()].find((candidate) => candidate.id === evictedId);
+      if (!evicted) continue;
+      this.assetsBySymbol.delete(evicted.pocketSymbol);
+      this.transport?.unsubscribe(evicted.pocketSymbol);
+      this.options.pipeline.releaseAsset(evicted.id);
+      for (const key of [...this.requestedSubscriptions]) {
+        if (key.startsWith(`${evicted.pocketSymbol}:`)) this.requestedSubscriptions.delete(key);
+      }
+    }
+    this.priorityAssetIds.add(asset.id);
+    this.assetsBySymbol.set(asset.pocketSymbol, asset);
+  }
+
+  private async hydrateStoredCandles(asset: CollectorAsset): Promise<void> {
+    try {
+      const stored = await Promise.all([
+        this.options.candleStore.list(asset.id, 30, HISTORY_CANDLE_LIMITS[30]),
+        this.options.candleStore.list(asset.id, 60, HISTORY_CANDLE_LIMITS[60]),
+        this.options.candleStore.list(asset.id, 300, HISTORY_CANDLE_LIMITS[300])
+      ]);
+      this.options.pipeline.hydrateHistoricalCandles(
+        stored.flatMap((response) =>
+          response.candles
+            .map(storedToMarketCandle)
+            .filter((candle): candle is MarketCandle => candle !== null)
+        )
+      );
+    } catch (error) {
+      // Pocket history can still warm the selected asset when the cache is temporarily unavailable.
+      this.lastError = safeMessage(error);
+      this.options.onError?.(error, "Stored candle hydration failed");
     }
   }
 
-  private subscribeAll(): void {
-    const assets = [...this.assetsBySymbol.values()].sort((left, right) => {
-      const leftPriority = this.priorityAssetIds.has(left.id) ? 1 : 0;
-      const rightPriority = this.priorityAssetIds.has(right.id) ? 1 : 0;
-      return rightPriority - leftPriority;
-    });
-    for (const asset of assets) this.subscribeAsset(asset, this.priorityAssetIds.has(asset.id));
+  private subscribePriorityAssets(): void {
+    for (const asset of this.assetsBySymbol.values()) {
+      if (this.priorityAssetIds.has(asset.id)) this.subscribeAsset(asset, true);
+    }
   }
 
   private subscribeAsset(asset: CollectorAsset, priority: boolean): number {
@@ -605,6 +701,42 @@ export class PocketCollector implements PocketCollectorRuntime {
       requested += 1;
     }
     return requested;
+  }
+
+  private scheduleCatalogPersist(): void {
+    if (this.catalogTimer || !this.pendingCatalog) return;
+    const delay = Math.max(
+      0,
+      CATALOG_WRITE_INTERVAL_MS - (Date.now() - this.lastCatalogPersistAtMs)
+    );
+    this.catalogTimer = setTimeout(() => {
+      this.catalogTimer = null;
+      this.flushCatalogPersist();
+    }, delay);
+    this.catalogTimer.unref();
+  }
+
+  private flushCatalogPersist(): void {
+    const pending = this.pendingCatalog;
+    if (!pending) return;
+    this.pendingCatalog = null;
+    this.catalogWrite = this.catalogWrite
+      .then(async () => {
+        await this.options.assetStore.applyLiveCatalog(
+          pending.assets,
+          new Date(pending.receivedAtMs).toISOString()
+        );
+        this.lastCatalogFingerprint = pending.fingerprint;
+        this.lastCatalogPersistAtMs = Date.now();
+        this.catalogWrites += 1;
+      })
+      .catch((error) => {
+        this.lastError = safeMessage(error);
+        this.options.onError?.(error, "Pocket live catalog persistence failed");
+      })
+      .finally(() => {
+        if (this.pendingCatalog) this.scheduleCatalogPersist();
+      });
   }
 
   private startWatchdog(): void {
@@ -663,6 +795,9 @@ export class UnavailablePocketCollector implements PocketCollectorRuntime {
       acceptedTicks: 0,
       rejectedTicks: 0,
       historyCandles: 0,
+      maxPriorityAssets: 0,
+      catalogWrites: 0,
+      catalogWritesSkipped: 0,
       lastError: null
     };
   }

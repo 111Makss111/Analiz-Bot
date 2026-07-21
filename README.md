@@ -56,10 +56,11 @@ npm run build
 - Етап 2: Vercel/Render-конфігурація, Telegram Mini App bootstrap, production CORS і перевірка `initData`.
 - Етап 3: server-only Supabase client і початкова схема даних у migration workflow.
 - Етап 5: кеш валютних пар, виплат і доступності Pocket через server-only API.
-- Етап 6: детерміноване ядро Pocket-тиків і 30s/M1/M5 свічок із пакетним записом у Supabase.
+- Етап 6: детерміноване ядро Pocket-тиків і 30s/M1/M5 свічок; live ticks працюють у bounded Render memory, а Supabase отримує лише завершені свічки.
 - Pocket collector v1: Demo-only Socket.IO, live каталог/тики, історія, контроль свіжості та перепідключення.
+- Collector load control v1: максимум 3 активні пари за замовчуванням, 15-секундні batches, database backoff, 7-денний candle retention і правдивий health probe.
 - Telegram Bot: захищений webhook, `/start`, `/help` і кнопка запуску Mini App.
 
-Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md), [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md), [`docs/candle-data-stage-6.md`](docs/candle-data-stage-6.md) та [`docs/pocket-collector-v1.md`](docs/pocket-collector-v1.md).
+Інструкції: [`docs/deployment-stage-2.md`](docs/deployment-stage-2.md), [`docs/supabase-stage-3.md`](docs/supabase-stage-3.md), [`docs/asset-catalog-stage-5.md`](docs/asset-catalog-stage-5.md), [`docs/candle-data-stage-6.md`](docs/candle-data-stage-6.md), [`docs/pocket-collector-v1.md`](docs/pocket-collector-v1.md) та [`docs/collector-load-control-v1.md`](docs/collector-load-control-v1.md).
 
 Живі котировки з’являються лише після server-only налаштування дійсної Pocket Demo-сесії. Дані ніколи не імітуються.

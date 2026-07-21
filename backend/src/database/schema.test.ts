@@ -11,6 +11,12 @@ const migrations = migrationFiles.map((file) =>
   readFileSync(new URL(file, migrationsDirectory), "utf8")
 );
 const migration = migrations.join("\n");
+const pocketRuntimeMigrationIndex = migrationFiles.indexOf(
+  "20260718190000_pocket_collector_runtime.sql"
+);
+const pocketRuntimeMigration = migrations[pocketRuntimeMigrationIndex]!;
+const migrationsBeforePocketRuntime = migrations.slice(0, pocketRuntimeMigrationIndex);
+const migrationsAfterPocketRuntime = migrations.slice(pocketRuntimeMigrationIndex + 1);
 
 const protectedTables = [
   "telegram_users",
@@ -162,6 +168,74 @@ describe("initial Supabase migration", () => {
     expect(migration).toContain("Number of accepted Pocket ticks");
   });
 
+  it("новий collector RPC записує лише завершені свічки та підтримує retention", async () => {
+    const database = new PGlite({ extensions: { pgcrypto } });
+    const assetId = "123e4567-e89b-42d3-a456-426614174000";
+    try {
+      await database.exec(`
+        create schema if not exists extensions;
+        create role anon nologin;
+        create role authenticated nologin;
+        create role service_role nologin;
+      `);
+      for (const sql of migrations) await database.exec(sql);
+      await database.exec(`
+        insert into public.assets (id, pocket_symbol, display_name, market_type)
+        values ('${assetId}', 'EURUSD_otc', 'EUR/USD OTC', 'otc');
+
+        select public.ingest_pocket_completed_candles(
+          jsonb_build_array(
+            jsonb_build_object(
+              'asset_id', '${assetId}',
+              'timeframe_seconds', 60,
+              'open_time', now() - interval '8 days',
+              'close_time', now() - interval '8 days' + interval '1 minute',
+              'last_tick_at', now() - interval '8 days' + interval '50 seconds',
+              'open', 1.1,
+              'high', 1.2,
+              'low', 1.0,
+              'close', 1.15,
+              'tick_count', 20,
+              'is_complete', true
+            ),
+            jsonb_build_object(
+              'asset_id', '${assetId}',
+              'timeframe_seconds', 60,
+              'open_time', now() - interval '1 minute',
+              'close_time', now(),
+              'last_tick_at', now() - interval '1 second',
+              'open', 1.1,
+              'high', 1.2,
+              'low', 1.0,
+              'close', 1.15,
+              'tick_count', 20,
+              'is_complete', false
+            )
+          )
+        );
+      `);
+
+      const before = await database.query<{ candles: bigint; ticks: bigint }>(`
+        select
+          (select count(*) from public.candles) as candles,
+          (select count(*) from public.ticks) as ticks
+      `);
+      expect(Number(before.rows[0]?.candles)).toBe(1);
+      expect(Number(before.rows[0]?.ticks)).toBe(0);
+
+      await database.exec(`
+        select * from public.prune_pocket_market_data(
+          now() - interval '7 days',
+          now() - interval '1 day'
+        );
+      `);
+      const after = await database.query<{ count: bigint }>("select count(*) from public.candles");
+      expect(Number(after.rows[0]?.count)).toBe(0);
+    } finally {
+      await database.close();
+    }
+  }, 30_000);
+
   it("зберігає live Pocket symbol, payout і доступність атомарно", async () => {
     const database = new PGlite({ extensions: { pgcrypto } });
     try {
@@ -217,7 +291,7 @@ describe("initial Supabase migration", () => {
         create role authenticated nologin;
         create role service_role nologin;
       `);
-      for (const sql of migrations.slice(0, -1)) await database.exec(sql);
+      for (const sql of migrationsBeforePocketRuntime) await database.exec(sql);
       await database.exec(`
         insert into public.assets (
           id, pocket_symbol, display_name, market_type, base_currency, quote_currency
@@ -225,7 +299,8 @@ describe("initial Supabase migration", () => {
           '${assetId}', 'AUD/CAD OTC', 'AUD/CAD OTC', 'otc', 'AUD', 'CAD'
         );
       `);
-      await database.exec(migrations.at(-1)!);
+      await database.exec(pocketRuntimeMigration);
+      for (const sql of migrationsAfterPocketRuntime) await database.exec(sql);
       await database.exec(`
         select public.replace_currency_asset_catalog(
           '[{
@@ -266,7 +341,7 @@ describe("initial Supabase migration", () => {
         create role authenticated nologin;
         create role service_role nologin;
       `);
-      for (const sql of migrations.slice(0, -1)) await database.exec(sql);
+      for (const sql of migrationsBeforePocketRuntime) await database.exec(sql);
       await database.exec(`
         insert into public.assets (
           id, pocket_symbol, display_name, market_type, base_currency, quote_currency,
@@ -297,7 +372,8 @@ describe("initial Supabase migration", () => {
         values ('collector', 'warning', 'DUPLICATE_TEST', 'test', '${legacyId}');
       `);
 
-      await database.exec(migrations.at(-1)!);
+      await database.exec(pocketRuntimeMigration);
+      for (const sql of migrationsAfterPocketRuntime) await database.exec(sql);
 
       const assets = await database.query<{ id: string; pocket_symbol: string }>(`
         select id, pocket_symbol from public.assets where display_name = 'TND/USD OTC'

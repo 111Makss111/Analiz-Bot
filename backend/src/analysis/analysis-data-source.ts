@@ -1,6 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CandleStore } from "../market-data/candle-store.js";
-import type { AssetDataState, MarketType, StoredCandle } from "../market-data/types.js";
+import type { MarketDataPipeline } from "../market-data/market-data-pipeline.js";
+import type {
+  AssetDataState,
+  MarketCandle,
+  MarketType,
+  StoredCandle,
+  TimeframeSeconds
+} from "../market-data/types.js";
 import type {
   AnalysisAsset,
   AnalysisCandle,
@@ -18,12 +25,6 @@ type AssetRow = {
   data_state: unknown;
   last_quote: unknown;
   last_quote_at: unknown;
-};
-
-type TickRow = {
-  pocket_time: unknown;
-  received_at: unknown;
-  price: unknown;
 };
 
 function nullableNumber(value: unknown): number | null {
@@ -47,15 +48,6 @@ function mapAsset(row: AssetRow | null): AnalysisAsset | null {
   };
 }
 
-function mapTick(row: TickRow): AnalysisTick | null {
-  const timeMs = Date.parse(String(row.pocket_time));
-  const receivedAtMs = Date.parse(String(row.received_at));
-  const price = Number(row.price);
-  return Number.isFinite(timeMs) && Number.isFinite(receivedAtMs) && Number.isFinite(price) && price > 0
-    ? { timeMs, receivedAtMs, price }
-    : null;
-}
-
 function mapCandle(candle: StoredCandle): AnalysisCandle {
   return {
     timeframeSeconds: candle.timeframeSeconds,
@@ -68,6 +60,35 @@ function mapCandle(candle: StoredCandle): AnalysisCandle {
     tickCount: candle.tickCount,
     isComplete: candle.isComplete
   };
+}
+
+function mapLiveCandle(candle: MarketCandle): AnalysisCandle {
+  return {
+    timeframeSeconds: candle.timeframeSeconds,
+    openTimeMs: candle.openTimeMs,
+    closeTimeMs: candle.closeTimeMs,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    tickCount: candle.tickCount,
+    isComplete: candle.isComplete
+  };
+}
+
+function mergeCandles(
+  stored: StoredCandle[],
+  live: MarketCandle[],
+  timeframeSeconds: TimeframeSeconds,
+  limit: number
+): AnalysisCandle[] {
+  const merged = new Map<number, AnalysisCandle>();
+  for (const candle of stored.map(mapCandle)) merged.set(candle.openTimeMs, candle);
+  for (const candle of live.map(mapLiveCandle)) merged.set(candle.openTimeMs, candle);
+  return [...merged.values()]
+    .filter((candle) => candle.timeframeSeconds === timeframeSeconds)
+    .sort((left, right) => left.openTimeMs - right.openTimeMs)
+    .slice(-limit);
 }
 
 export interface AnalysisDataSource {
@@ -83,7 +104,8 @@ export class UnavailableAnalysisDataSource implements AnalysisDataSource {
 export class SupabaseAnalysisDataSource implements AnalysisDataSource {
   constructor(
     private readonly client: SupabaseClient,
-    private readonly candleStore: CandleStore
+    private readonly candleStore: CandleStore,
+    private readonly liveData: MarketDataPipeline
   ) {}
 
   async load(assetId: string, capturedAtMs: number): Promise<AnalysisSnapshot> {
@@ -94,35 +116,46 @@ export class SupabaseAnalysisDataSource implements AnalysisDataSource {
       )
       .eq("id", assetId)
       .maybeSingle();
-    const tickRequest = this.client
-      .from("ticks")
-      .select("pocket_time,received_at,price")
-      .eq("asset_id", assetId)
-      .gte("pocket_time", new Date(capturedAtMs - 45_000).toISOString())
-      .order("pocket_time", { ascending: false })
-      .limit(500);
-
-    const [assetResult, tickResult, candles30s, candlesM1, candlesM5] = await Promise.all([
+    const [assetResult, candles30s, candlesM1, candlesM5] = await Promise.all([
       assetRequest,
-      tickRequest,
       this.candleStore.list(assetId, 30, 90),
       this.candleStore.list(assetId, 60, 90),
       this.candleStore.list(assetId, 300, 30)
     ]);
 
     if (assetResult.error) throw new Error(`Supabase analysis asset query failed: ${assetResult.error.message}`);
-    if (tickResult.error) throw new Error(`Supabase analysis tick query failed: ${tickResult.error.message}`);
+    const asset = mapAsset(assetResult.data as AssetRow | null);
+    const quote = this.liveData.getQuote(assetId, capturedAtMs, 15_000);
+    if (asset) {
+      asset.lastQuote = quote?.tick.price ?? null;
+      asset.lastQuoteAt = quote ? new Date(quote.tick.pocketTimeMs).toISOString() : null;
+      asset.dataState = quote?.isFresh ? "ready" : quote ? "stale" : "warming";
+    }
 
-    const ticks = ((tickResult.data ?? []) as TickRow[])
-      .map(mapTick)
-      .filter((tick): tick is AnalysisTick => tick !== null)
-      .reverse();
+    const ticks: AnalysisTick[] = this.liveData
+      .getRecentTicks(assetId, capturedAtMs - 45_000)
+      .map((tick) => ({ timeMs: tick.pocketTimeMs, receivedAtMs: tick.receivedAtMs, price: tick.price }));
     return {
-      asset: mapAsset(assetResult.data as AssetRow | null),
+      asset,
       ticks,
-      candles30s: candles30s.candles.map(mapCandle),
-      candlesM1: candlesM1.candles.map(mapCandle),
-      candlesM5: candlesM5.candles.map(mapCandle),
+      candles30s: mergeCandles(
+        candles30s.candles,
+        this.liveData.getCandles(assetId, 30, 90),
+        30,
+        90
+      ),
+      candlesM1: mergeCandles(
+        candlesM1.candles,
+        this.liveData.getCandles(assetId, 60, 90),
+        60,
+        90
+      ),
+      candlesM5: mergeCandles(
+        candlesM5.candles,
+        this.liveData.getCandles(assetId, 300, 30),
+        300,
+        30
+      ),
       capturedAtMs
     };
   }
